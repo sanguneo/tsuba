@@ -28,7 +28,10 @@ function required(name: string): string {
 }
 
 function createClient(): TelegramClient {
-  mkdirSync(dirname(SESSION), { recursive: true });
+  // The session opens the whole account: nothing this process creates is
+  // readable by anyone else (found 644 on the VPS before this).
+  process.umask(0o077);
+  mkdirSync(dirname(SESSION), { recursive: true, mode: 0o700 });
   const proxy = process.env.TSUBA_TELEGRAM_PROXY;
   return new TelegramClient({
     apiId: Number(required("TSUBA_TELEGRAM_API_ID")),

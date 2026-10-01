@@ -16,27 +16,25 @@
 
 ## VPS (ubuntu@158.180.64.185, aarch64, Ubuntu 24.04)
 
-Bun 1.4.2 는 `~/.bun-tsuba` 에 따로 둡니다. 같은 VPS 의 다른 프로젝트가 쓰는 `~/.bun`
-(1.3.x)과 셸 설정은 건드리지 않습니다.
+VPS 의 기본 Bun(`~/.bun/bin/bun`; `~/.local/bin/bun` 은 그 링크)을 씁니다. 2026-10-01 에
+1.3.14 에서 1.4.2 로 올렸습니다. 같은 Bun 을 쓰는 다른 프로젝트도 다음 재시작부터 1.4.2 입니다.
 
 ```sh
-# Bun 1.4.2 (설치 스크립트는 셸 설정을 고치므로 릴리스 zip 을 직접 풂)
-mkdir -p ~/.bun-tsuba/bin && cd /tmp
-curl -fsSLO https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip
-unzip -o bun-linux-aarch64.zip && mv bun-linux-aarch64/bun ~/.bun-tsuba/bin/bun
-
+~/.bun/bin/bun upgrade
 git clone git@github.com:sanguneo/tsuba.git ~/tsuba && cd ~/tsuba
-~/.bun-tsuba/bin/bun install --frozen-lockfile
-~/.bun-tsuba/bin/bun run typecheck && ~/.bun-tsuba/bin/bun test
+~/.bun/bin/bun install --frozen-lockfile
+~/.bun/bin/bun run typecheck && ~/.bun/bin/bun test
 ```
 
 `~/tsuba/.env` (권한 600): `TSUBA_TELEGRAM_API_ID`, `TSUBA_TELEGRAM_API_HASH`,
 `TSUBA_TOKEN`(`openssl rand -hex 32`). 프록시 줄은 두지 않습니다.
 
 ```sh
-~/.bun-tsuba/bin/bun adapters/telegram/src/cli.ts login   # 사람이 직접 입력
-~/.bun-tsuba/bin/bun adapters/telegram/src/cli.ts serve   # 127.0.0.1:8790
+~/.bun/bin/bun adapters/telegram/src/cli.ts login   # 사람이 직접 입력
+~/.bun/bin/bun adapters/telegram/src/cli.ts serve   # 127.0.0.1:8790
 ```
+
+CLI 는 `umask 077` 로 돌기 때문에 `sessions/` 는 700, 세션 파일은 600 으로 만들어집니다.
 
 서비스로 돌릴 때는 `deploy/tsuba-telegram.service` 를 씁니다(아직 등록하지 않음).
 
@@ -51,7 +49,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now tsuba-telegram
 | --- | --- |
 | VPS 에서 도는 saya (리버스 프록시) | `http://127.0.0.1:8790` |
 | PC 에서 도는 saya | `http://127.0.0.1:18790` — PC 의 `proxylauncher.ps1` 이 `ssh -L 127.0.0.1:18790:127.0.0.1:8790` 을 유지 |
+| tailnet 의 아무 기기 | `https://oci.tailcbc039.ts.net:8790` — VPS 의 `tailscale serve` (tailnet 전용, Funnel 아님) |
 | PC 에서 직접 띄운 tsuba | `http://127.0.0.1:8790` |
+
+Tailscale 경로는 어댑터를 loopback 에 둔 채 tailscaled 가 tailnet 에서만 HTTPS 로 받아
+넘깁니다. 설정은 재부팅에도 남습니다.
+
+```sh
+sudo tailscale serve --bg --https=8790 http://127.0.0.1:8790   # 켜기
+sudo tailscale serve --https=8790 off                         # 끄기
+```
+
+어느 경로든 베어러 토큰은 그대로 필요합니다. tailnet 안이라고 인증을 생략하지 않습니다.
 
 PC 쪽 포워딩 포트를 18790 으로 둔 것은 PC 에서 tsuba 를 직접 띄울 때의 8790 과 겹치지
 않게 하려는 것입니다. 토큰(`TSUBA_TOKEN`)은 어댑터를 띄운 기계의 `.env` 에 있고,
