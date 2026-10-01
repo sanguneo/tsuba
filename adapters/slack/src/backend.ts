@@ -28,8 +28,14 @@ const CONVERSATION = /^[CDG][A-Z0-9]{6,}$/;
 const TS = /^\d+\.\d{1,6}$/;
 const FILE_HOSTS = new Set(["files.slack.com"]);
 const ROOM_LIMIT = 500;
-/** `conversations.info` is Tier 3 (50+ a minute); stay under it with room to spare. */
-const INFO_INTERVAL_MS = 1500;
+/**
+ * `conversations.info` and `conversations.history` are Tier 3 (50+ a minute
+ * each). A room can take one info and two history calls, so 3 s a room keeps
+ * history at 40 a minute and leaves room for reads.
+ */
+const INFO_INTERVAL_MS = 3000;
+/** Unread messages counted past `last_read`, as many as one page holds. */
+const UNREAD_PAGE = 100;
 
 interface SlackUser {
   id: string;
@@ -86,6 +92,7 @@ export function slackBackend(
   },
   fetcher: typeof fetch = fetch,
   userToken = "",
+  options: { fillIntervalMs?: number } = {},
 ): AdapterBackend & { stop(): void } {
   const users = new Map<string, Promise<SlackUser | undefined>>();
   const info = new Map<string, SlackConversationInfo>();
@@ -169,17 +176,43 @@ export function slackBackend(
         const answer = await call<{
           channel?: {
             unread_count_display?: number;
-            latest?: { ts?: string; text?: string; user?: string };
+            last_read?: string;
+            latest?: SlackMessageLike;
           };
         }>("conversations.info", { channel: next });
         const channel = answer.channel;
-        const latest = channel?.latest;
+        // Slack gives the count and the newest message for DMs only; for the
+        // rest, read the newest message and count what came after last_read.
+        let latest = channel?.latest;
+        if (!latest?.ts) {
+          const newest = await call<HistoryAnswer>("conversations.history", {
+            channel: next,
+            limit: 1,
+          });
+          latest = newest.messages?.[0];
+        }
+        let unread = channel?.unread_count_display;
+        if (unread === undefined && channel?.last_read && latest?.ts) {
+          const after =
+            Number(latest.ts) > Number(channel.last_read)
+              ? await call<HistoryAnswer>("conversations.history", {
+                  channel: next,
+                  // A room never read has last_read 0000000000.000000, which Slack
+                  // refuses as `oldest` (invalid_ts_oldest): count from the start.
+                  ...(/^0+\.0+$/.test(channel.last_read)
+                    ? {}
+                    : { oldest: channel.last_read, inclusive: false }),
+                  limit: UNREAD_PAGE,
+                })
+              : { messages: [] };
+          unread = (after.messages ?? []).filter(
+            (item) => item.user !== identity.userId && !threadOnly(item),
+          ).length;
+        }
         const text = latest?.text ?? "";
         const resolved = await names(mentionedUsers(text));
         info.set(next, {
-          ...(channel?.unread_count_display !== undefined
-            ? { unread: channel.unread_count_display }
-            : {}),
+          ...(unread !== undefined ? { unread } : {}),
           ...(latest?.ts ? { latestTs: latest.ts } : {}),
           ...(latest?.ts
             ? {
@@ -194,7 +227,7 @@ export function slackBackend(
         info.set(next, info.get(next) ?? {});
       }
       schedule();
-    }, INFO_INTERVAL_MS);
+    }, options.fillIntervalMs ?? INFO_INTERVAL_MS);
   }
 
   async function title(

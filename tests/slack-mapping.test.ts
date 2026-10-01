@@ -16,6 +16,7 @@ import {
 import { readEnvelope } from "../adapters/slack/src/socket";
 import { AdapterError } from "../packages/serve-kit/src/index";
 import { schema } from "./fixtures";
+import { bounded, deferred } from "./harness/barriers";
 
 const emoji = emojiTable([
   {
@@ -421,4 +422,101 @@ test("socket frames are acknowledged, events come out, and a disconnect notice a
     ),
   ).toEqual({ reconnect: true });
   expect(readEnvelope("not json")).toEqual({ reconnect: false });
+});
+
+test("a channel's unread count is what came after last_read from others, and its activity is its newest message", async () => {
+  const counted = deferred<void>();
+  const { call } = slackFake({
+    "users.conversations": () => ({
+      ok: true,
+      channels: [{ id: ROOM, name: "general" }],
+    }),
+    "conversations.info": () => ({
+      ok: true,
+      channel: { last_read: "1700000000.000100" },
+    }),
+    "conversations.history": (params) => {
+      if (params.oldest) {
+        counted.resolve();
+        return {
+          ok: true,
+          messages: [
+            { ts: "1700000000.000400", user: "U0000000002", text: "b" },
+            { ts: "1700000000.000300", user: SELF, text: "mine" },
+            {
+              ts: "1700000000.000250",
+              user: "U0000000002",
+              text: "t",
+              thread_ts: "1700000000.000100",
+            },
+            { ts: "1700000000.000200", user: "U0000000003", text: "a" },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        messages: [{ ts: "1700000000.000400", user: "U0000000002", text: "b" }],
+      };
+    },
+  });
+  const backend = slackBackend(
+    call,
+    { userId: SELF },
+    emoji,
+    quiet,
+    fetch,
+    "",
+    { fillIntervalMs: 0 },
+  );
+  expect((await backend.listRooms?.())?.rooms[0]).toMatchObject({ unread: 0 });
+  await bounded(counted.promise, "unread counted");
+  let room:
+    | Awaited<
+        ReturnType<NonNullable<typeof backend.listRooms>>
+      >["rooms"][number]
+    | undefined;
+  for (let attempt = 0; attempt < 50 && !room?.lastActivityAt; attempt++) {
+    await bounded(Promise.resolve(), "next turn");
+    room = (await backend.listRooms?.())?.rooms[0];
+  }
+  expect(room).toMatchObject({
+    unread: 2,
+    lastActivityAt: "2023-11-14T22:13:20.000Z",
+    lastMessage: { text: "b", fromMe: false },
+  });
+  backend.stop();
+});
+
+test("a channel never read counts from its start, without the zero last_read Slack refuses", async () => {
+  const counted = deferred<Record<string, unknown>>();
+  const { call } = slackFake({
+    "users.conversations": () => ({
+      ok: true,
+      channels: [{ id: ROOM, name: "general" }],
+    }),
+    "conversations.info": () => ({
+      ok: true,
+      channel: { last_read: "0000000000.000000" },
+    }),
+    "conversations.history": (params) => {
+      if (params.limit === 100) counted.resolve(params);
+      return {
+        ok: true,
+        messages: [{ ts: "1700000000.000400", user: "U0000000002", text: "b" }],
+      };
+    },
+  });
+  const backend = slackBackend(
+    call,
+    { userId: SELF },
+    emoji,
+    quiet,
+    fetch,
+    "",
+    { fillIntervalMs: 0 },
+  );
+  await backend.listRooms?.();
+  const params = await bounded(counted.promise, "unread counted");
+  expect(params.oldest).toBeUndefined();
+  backend.stop();
 });

@@ -28,9 +28,12 @@ Web API 는 HTTPS 폼 요청이고 Socket Mode 는 WebSocket 하나라서 Bun �
 | 그룹 DM | 예 | 나를 뺀 사람들의 핸들 | `group` |
 | 스레드 | 아니요 | — | 스레드는 방이 아닙니다(계약의 `threads.read` 는 아직 예약) |
 
-- **안 읽음 수와 최근 활동**은 Slack 의 값(`conversations.info` 의 `unread_count_display`, `latest`)입니다.
-  `conversations.info` 는 방마다 한 번씩 불러야 해서 1.5초에 하나씩(분당 40) 채워 나갑니다. 채워지기
-  전의 방은 안 읽음 0, 활동 시각 없음으로 보입니다. 새 이벤트가 온 방은 먼저 다시 채웁니다.
+- **안 읽음 수와 최근 활동**: DM 은 Slack 의 값(`conversations.info` 의 `unread_count_display`, `latest`)입니다.
+  채널·비공개 채널·그룹 DM 에는 Slack 이 그 값을 주지 않아서(2026-10-01 실제 워크스페이스에서 확인:
+  `last_read` 만 옴), 최신 메시지 하나(`conversations.history limit=1`)와 `last_read` 이후의 남이 쓴 메시지
+  수(스레드 안 답글 제외, 최대 100)로 셉니다. 방마다 호출이 최대 셋이라 3초에 한 방씩(기록 읽기 분당 40
+  이하) 채워 나갑니다. 채워지기 전의 방은 안 읽음 0, 활동 시각 없음으로 보입니다. 새 이벤트가 온 방은 먼저
+  다시 채웁니다.
 - 탈퇴한 사람과의 DM 은 `"features": {"messages.send": false}` 입니다. 그 밖의 제한(공지 전용 채널
   등)은 보낼 때 Slack 이 거절하고 `403 FORBIDDEN` 으로 답합니다.
 - 최대 500개.
