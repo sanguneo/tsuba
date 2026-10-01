@@ -1,5 +1,7 @@
 # Discord-Personal 어댑터
 
+`serve`는 시작할 때 빨간 Among Us `adapters/discord-user/icon.svg`를 한 번 읽어 `/icon`으로 답하고 `provider.icon`에 바이트 버전을 알립니다(0.2.5).
+
 개인 Discord 계정으로 동작하는 별도 어댑터입니다(`account.kind: "user"`).
 봇 어댑터의 `provider.id: "discord"`와 달리 `discord-user`이며, saya에는
 `Discord-Personal`로 표시됩니다. 계정 연결 정보는 tsuba에만 둡니다.

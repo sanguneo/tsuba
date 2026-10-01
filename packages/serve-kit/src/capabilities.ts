@@ -63,7 +63,7 @@ export type RoomFeatures = { [K in FeatureId]?: false | FeatureParams[K] } & {
 };
 
 export interface Capabilities {
-  provider: { id: string; name: string };
+  provider: { id: string; name: string; icon?: string };
   account: { kind: "user" | "bot" | "official" };
   adapter: { name: string; version: string };
   features: Features;

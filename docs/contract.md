@@ -125,7 +125,7 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 - 읽기는 명사에 `GET`(`/rooms`, `/messages`, `/media`, 예약 `/thread`), 쓰기는 동사에
   `POST`(`/send`, 예약 `/edit`·`/delete`·`/react`·`/read`·`/typing`·`/upload`)입니다.
 - 라우트 하나를 기능 하나가 엽니다. 계약의 각 operation 이 `x-feature` 로 그 기능을
-  밝힙니다(`/health`, `/capabilities` 는 열려 있음).
+  밝힙니다(`/health`, `/capabilities`, `/icon` 은 기능 제한 없음; 뒤의 둘은 베어러 인증 필요).
 - 자기 라우트가 없는 기능은 올라타는 자리를 `x-in` 으로 밝힙니다(`messages.reply` 는
   `SendRequest.replyTo`, `reactions.read` 는 `Message.reactions`). 다른 기능 옆에서만 신고할 수
   있는 기능은 `x-requires` 로, 기능이 있어야 보낼 수 있는 이벤트는 `x-sse-events` 의
@@ -191,6 +191,8 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
   - 파일 이름은 `filename*`(UTF-8, 퍼센트 인코딩)와 출력 가능한 ASCII `filename` 에 담습니다.
 - `name` 과 `mimeType` 은 보낸 사람이 정한 것입니다. 화면에는 글자로만 쓰고 경로로 쓰지
   않습니다.
+
+`GET /icon` 은 제공자 SVG·PNG·WebP를 CSP·nosniff·private 캐시 헤더로 답하며, `provider.icon` 은 바이트가 바뀌면 바뀌는 버전이고 없으면 `404 NOT_FOUND` 입니다(0.2.5).
 
 ## 확장 이름공간
 

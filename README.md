@@ -9,9 +9,9 @@
 
 ## 상태
 
-계약 0.2.4의 서버와 첫 어댑터를 구현했습니다.
+계약 0.2.5의 서버와 첫 어댑터를 구현했습니다.
 
-- `contract/openapi.json` — `/health`, `/capabilities`, `/rooms`, `/messages`, `/media`, `/stream`, `/send`, `/edit`, `/delete`, `/react`, `/read`
+- `contract/openapi.json` — `/health`, `/capabilities`, `/icon`, `/rooms`, `/messages`, `/media`, `/stream`, `/send`, `/edit`, `/delete`, `/react`, `/read`
 - `contract/CHANGELOG.md` — 계약 버전마다 바뀐 것과 이유
 - `docs/contract.md` — 계약 규칙(버전 호환, 오류 코드, 방별 기능, 라우트·이벤트 이름, 첨부)과 예약된 이름 대장
 - `packages/serve-kit` — 인증, 기능 신고 검증, 방/메시지 라우팅, SSE 이어 읽기와 변경 이벤트, 쓰기 줄 하나, 첨부 응답 헤더

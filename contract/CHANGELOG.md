@@ -6,6 +6,20 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.5 — 2026-10-02
+
+Additive: a 0.2.4 client ignores the new route and key, and a 0.2.5 client
+draws its own mark for a 0.2.4 adapter, which declares no icon.
+
+### Added
+
+- **`GET /icon`** and **`Capabilities.provider.icon`**: an adapter can carry
+  its provider's icon (SVG, PNG or WebP) so a client draws it without knowing
+  the provider. `provider.icon` is an opaque version that changes with the
+  bytes. The answer is inert like `/media` (sandbox CSP and `nosniff`), and an
+  SVG with scripts, event handlers or outside references is refused at start.
+  The route is open to the bearer like `/capabilities`; no feature gates it.
+
 ## 0.2.4 — 2026-10-01
 
 Additive: a 0.2.3 client ignores the new key, and a 0.2.4 client draws a 0.2.3

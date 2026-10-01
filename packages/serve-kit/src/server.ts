@@ -21,12 +21,14 @@ import {
   RESERVED_FEATURES,
 } from "./contract";
 import { failure, ok } from "./envelope";
+import { type ProviderIcon, prepareIcon } from "./icon";
 import { mediaHeaders } from "./media";
 
 export interface AdapterOptions {
   token: string;
   capabilities: Capabilities;
   backend?: AdapterBackend;
+  icon?: ProviderIcon;
   pingIntervalMs?: number;
 }
 
@@ -136,9 +138,17 @@ export function createHandler(options: AdapterOptions) {
     throw new Error(
       "Cursor resume must be declared iff messagesAfter is implemented",
     );
-  const capabilities = {
+  const icon = options.icon ? prepareIcon(options.icon) : undefined;
+  const provider = { ...options.capabilities.provider };
+  delete provider.icon;
+  if (icon) provider.icon = icon.version;
+  const declaration: Capabilities = {
     ...options.capabilities,
-    revision: capabilityRevision(options.capabilities),
+    provider,
+  };
+  const capabilities = {
+    ...declaration,
+    revision: capabilityRevision(declaration),
   };
   const streams = new Set<() => void>();
   let writes = 0;
@@ -350,6 +360,21 @@ export function createHandler(options: AdapterOptions) {
       auth: true,
       answer: () =>
         ok({ contract: { version: CONTRACT_VERSION }, ...capabilities }),
+    },
+    "/icon": {
+      method: "GET",
+      auth: true,
+      answer: () =>
+        icon
+          ? new Response(icon.bytes, {
+              headers: {
+                "content-type": icon.type,
+                "content-security-policy": "default-src 'none'; sandbox",
+                "x-content-type-options": "nosniff",
+                "cache-control": "private, max-age=86400",
+              },
+            })
+          : failure("NOT_FOUND", "This provider has no icon"),
     },
     "/rooms": {
       method: "GET",

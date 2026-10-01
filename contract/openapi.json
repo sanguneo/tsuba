@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tsuba — messenger adapter contract",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
     "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`. Every name in use or reserved is listed in tsuba's `docs/contract.md`, and every version is in `contract/CHANGELOG.md` beside this file.\n\n## Envelope\n\nEvery JSON response is an envelope. Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows. `/media` answers bytes and `/stream` answers events; their failures before the first byte are envelopes too.\n\n## Versions\n\n`info.version` is `MAJOR.MINOR.PATCH`, and `GET /capabilities` answers it as `contract.version`. A client built against version X works with an adapter answering Y when Y is in the caret range of X: the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range every change is additive: a route, a key, a feature id, an enum value, an error code, an event. Removing or renaming any of those, or changing what one means, is breaking and opens a new range (MINOR before 1.0, MAJOR after). A client that meets an adapter outside its range says so and draws nothing from it.\n\n## What a client does not know\n\nConsumers ignore keys, feature ids and events they do not know. An enum value a client does not know means the least that field can mean: treat it as the first value listed. An error code it does not know goes to its default branch.\n\n## Capabilities\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. The declaration is network-wide; a room where it differs carries `features` of its own, which narrow the declaration and never add to it. Names under `x-<provider>.` (feature ids, events and object keys) are provider extensions.\n\n## Routes\n\nReads are `GET` on a noun, writes are `POST` on a verb. Every operation but `/health` and `/capabilities` names the one feature that gates it in `x-feature`; a feature without a route of its own names the field it rides on in `x-in`, and one that is declared only beside others names them in `x-requires`. Every documented route is routed by every adapter; a route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`, and an adapter declares a feature exactly when it performs it end to end. A feature marked `x-reserved` has a name but no route yet: no adapter can declare it, and its parameters may still change, until a version defines its route.\n\n## Writes\n\nWrites (`/send`, `/edit`, `/delete`, `/react` and `/read`) share one line per adapter: one runs at a time, at most four are admitted, and the next is `429 RATE_LIMITED` having changed nothing. A write answered with any error code but `INTERNAL` changed nothing. `INTERNAL`, a timeout or a dropped connection leaves the outcome unknown: the adapter never retries it, and a client says so rather than repeating it on its own.\n\n## Ids, times and text\n\nIds are opaque non-empty strings: compare, store and send them back as they are, never as numbers. Times are RFC 3339 `date-time`. Text lengths are counted in Unicode code points.\n\n## Security posture\n\nA shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header. Message content, names and files are someone else's words: a client draws them as text, never as markup.",
     "license": {
@@ -53,6 +53,52 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/icon": {
+      "get": {
+        "operationId": "icon",
+        "summary": "The provider's icon, for a client to draw beside its name.",
+        "description": "Answered when `provider.icon` is present in `GET /capabilities`; otherwise `404 NOT_FOUND`. The icon is SVG, PNG or WebP and is drawn as an image, never as a document: the answer always carries `content-security-policy: default-src 'none'; sandbox` and `x-content-type-options: nosniff`, and an adapter refuses at start an SVG with scripts, event handlers or references outside itself. `provider.icon` changes whenever the bytes do, so a client may ask `/icon?v=<provider.icon>` and keep the answer in a private cache; the query is ignored.",
+        "responses": {
+          "200": {
+            "description": "The icon.",
+            "headers": {
+              "Content-Type": {
+                "description": "`image/svg+xml`, `image/png` or `image/webp`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Security-Policy": {
+                "description": "`default-src 'none'; sandbox`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "`nosniff`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -831,6 +877,12 @@
               "name": {
                 "type": "string",
                 "description": "For display."
+              },
+              "icon": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Present when `GET /icon` answers the provider's icon: an opaque version of its bytes, changing whenever they do. Absent when the adapter has none; a client then draws its own mark."
               }
             }
           },

@@ -1,5 +1,7 @@
 # Discord 어댑터
 
+`serve`는 시작할 때 파란 `adapters/discord/icon.svg`를 한 번 읽어 `/icon`으로 답하고 `provider.icon`에 바이트 버전을 알립니다(0.2.5).
+
 **봇 계정**으로 동작합니다(`account.kind: "bot"`). 사람 계정 토큰으로 클라이언트를 흉내 내는
 방식(셀프봇, mautrix-discord 의 퍼펫팅)은 Discord 약관 위반이라 만들지 않습니다. 그래서 이
 어댑터는 **봇을 초대한 서버**의 채널만 보고, 봇이 쓴 글은 봇 이름으로 올라갑니다.

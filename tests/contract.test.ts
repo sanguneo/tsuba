@@ -61,11 +61,11 @@ function featureSchema(id: string): FeatureSchema {
   return schemas[features[id]?.$ref.split("/").pop() ?? ""] ?? {};
 }
 
-test("every route but health and capabilities is gated by one defined feature, and every defined feature gates one route or names the field it rides on", () => {
+test("every route but health, capabilities and icon is gated by one defined feature, and every defined feature gates one route or names the field it rides on", () => {
   const gates = operations.flatMap(({ path, operation }) => {
     const feature = operation["x-feature"];
     expect(feature === undefined).toBe(
-      path === "/health" || path === "/capabilities",
+      path === "/health" || path === "/capabilities" || path === "/icon",
     );
     return feature === undefined ? [] : [feature];
   });

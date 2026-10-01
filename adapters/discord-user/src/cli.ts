@@ -32,6 +32,12 @@ if (command !== "check" && command !== "serve") {
     token: process.env.TSUBA_DISCORD_USER_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_DISCORD_USER_PORT ?? 8794),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
+    icon: {
+      bytes: new Uint8Array(
+        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
+      ),
+      type: "image/svg+xml",
+    },
     capabilities: CAPABILITIES,
     backend,
   });

@@ -37,5 +37,6 @@ export {
   RESERVED_FEATURES,
 } from "./contract";
 export { type ErrorCode, failure, ok, STATUS } from "./envelope";
+export type { ProviderIcon } from "./icon";
 export { mediaHeaders } from "./media";
 export { type AdapterOptions, createHandler, serve } from "./server";

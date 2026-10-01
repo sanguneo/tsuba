@@ -72,6 +72,12 @@ async function serveForever(client: Client<true>) {
     token: process.env.TSUBA_DISCORD_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_DISCORD_PORT ?? 8792),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
+    icon: {
+      bytes: new Uint8Array(
+        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
+      ),
+      type: "image/svg+xml",
+    },
     capabilities: CAPABILITIES,
     backend: discordBackend(client),
   });

@@ -124,6 +124,12 @@ async function serveForever(tg: TelegramClient) {
     token: required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_PORT ?? 8790),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
+    icon: {
+      bytes: new Uint8Array(
+        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
+      ),
+      type: "image/svg+xml",
+    },
     capabilities: await capabilities(tg),
     backend: telegramBackend(tg),
   });

@@ -1,5 +1,7 @@
 # Slack 어댑터
 
+`serve`는 시작할 때 `adapters/slack/icon.svg`를 한 번 읽어 `/icon`으로 답하고 `provider.icon`에 바이트 버전을 알립니다(0.2.5).
+
 **내 계정**으로 동작합니다(`account.kind: "user"`). Slack 이 공식으로 내주는 **사용자 토큰**
 (`xoxp-`)으로 내 권한 그대로 읽고 쓰며, 실시간 이벤트는 **Socket Mode** 의 앱 수준 토큰
 (`xapp-`)으로 받습니다. 브라우저 쿠키 토큰(`xoxc-` + `d` 쿠키)처럼 공식 앱을 흉내 내는 방식은 쓰지
