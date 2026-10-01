@@ -580,11 +580,27 @@ export function slackBackend(
           avatarHash(address) !== match[2]
         )
           throw new AdapterError("NOT_FOUND", "No such Slack avatar");
+        // Gravatar answers a person who has none with a redirect to Slack's
+        // default picture. Follow at most three hops, each one checked again
+        // against the allowed hosts; anywhere else is no picture.
+        let target = url;
         let response: Response;
-        try {
-          response = await fetcher(url, { signal, redirect: "error" });
-        } catch {
-          throw slackError("avatar_fetch_failed");
+        for (let hop = 0; ; hop++) {
+          try {
+            response = await fetcher(target, { signal, redirect: "manual" });
+          } catch {
+            throw slackError("avatar_fetch_failed");
+          }
+          if (response.status < 300 || response.status >= 400) break;
+          const location = response.headers.get("location");
+          const next =
+            location && URL.canParse(location, target.href)
+              ? avatarUrl(new URL(location, target).href)
+              : undefined;
+          await response.body?.cancel();
+          if (!next || hop >= 2)
+            throw new AdapterError("NOT_FOUND", "No such Slack avatar");
+          target = next;
         }
         if (response.status === 429) throw slackError("ratelimited");
         if (response.status === 401) throw slackError("invalid_auth");

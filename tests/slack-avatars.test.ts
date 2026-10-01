@@ -23,7 +23,7 @@ function fixture(text = "Synthetic") {
   const listeners = new Set<(event: Record<string, unknown>) => void>();
   let address: unknown = ADDRESS;
   let userAnswer: (() => Response) | undefined;
-  let mediaAnswer = () =>
+  let mediaAnswer = (_url: string) =>
     new Response(new Uint8Array([1, 2, 3]), {
       headers: { "content-type": "image/png" },
     });
@@ -69,7 +69,7 @@ function fixture(text = "Synthetic") {
           },
         ],
       });
-    return mediaAnswer();
+    return mediaAnswer(url);
   }) as typeof fetch;
   const backend = slackBackend(
     slackApi("synthetic-slack-secret", fetcher),
@@ -100,7 +100,7 @@ function fixture(text = "Synthetic") {
     setUserAnswer(value: () => Response) {
       userAnswer = value;
     },
-    setMediaAnswer(value: () => Response) {
+    setMediaAnswer(value: (url: string) => Response) {
       mediaAnswer = value;
     },
     read: () => readMessages({ roomId: ROOM, limit: 10 }),
@@ -160,7 +160,7 @@ for (const host of [
         ...new Uint8Array(await new Response(media.body).arrayBuffer()),
       ]).toEqual([1, 2, 3]);
       const download = f.sent.find((call) => call.url === address);
-      expect(download?.init?.redirect).toBe("error");
+      expect(download?.init?.redirect).toBe("manual");
       expect(
         new Headers(download?.init?.headers).get("authorization"),
       ).toBeNull();
@@ -173,6 +173,57 @@ for (const host of [
     }
   });
 }
+
+test("Slack avatar media follows Gravatar's redirect to Slack's default picture, and nowhere else", async () => {
+  const gravatar = "https://secure.gravatar.com/avatar/synthetic.jpg";
+  const fallback = "https://a.slack-edge.com/synthetic/default.png";
+  for (const [location, expected] of [
+    [fallback, "served"],
+    ["/avatar/synthetic-next.jpg", "loops"],
+    ["https://example.invalid/synthetic.png", "NOT_FOUND"],
+    ["http://a.slack-edge.com/synthetic/default.png", "NOT_FOUND"],
+  ] as const) {
+    const f = fixture();
+    f.setAddress(gravatar);
+    f.setMediaAnswer((url) =>
+      url === fallback
+        ? new Response(new Uint8Array([4, 5, 6]), {
+            headers: { "content-type": "image/png" },
+          })
+        : new Response(null, { status: 302, headers: { location } }),
+    );
+    try {
+      if (expected === "served") {
+        const media = await f.media(idFor(gravatar));
+        expect([
+          ...new Uint8Array(await new Response(media.body).arrayBuffer()),
+        ]).toEqual([4, 5, 6]);
+      } else {
+        // A relative redirect stays on Gravatar and keeps redirecting: three hops, then none.
+        await expect(f.media(idFor(gravatar))).rejects.toMatchObject({
+          code: "NOT_FOUND",
+        });
+      }
+      const downloads = f.sent.filter(
+        (call) => !call.url.startsWith("https://slack.com/api/"),
+      );
+      expect(downloads.every((call) => call.init?.redirect === "manual")).toBe(
+        true,
+      );
+      expect(
+        downloads.some(
+          (call) =>
+            !/^https:\/\/(secure\.gravatar\.com|a\.slack-edge\.com)\//.test(
+              call.url,
+            ),
+        ),
+      ).toBe(false);
+      if (expected === "loops") expect(downloads).toHaveLength(3);
+    } finally {
+      f.backend.stop();
+    }
+  }
+});
 
 for (const address of [
   undefined,
@@ -231,7 +282,8 @@ for (const [status, code] of [
   [410, "NOT_FOUND"],
   [429, "RATE_LIMITED"],
   [503, "INTERNAL"],
-  [302, "INTERNAL"],
+  // A redirect with nowhere allowed to go is no picture, not an unknown outcome.
+  [302, "NOT_FOUND"],
 ] as const) {
   test(`Slack avatar HTTP ${status} maps to ${code}`, async () => {
     const f = fixture();
