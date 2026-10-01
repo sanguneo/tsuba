@@ -19,6 +19,13 @@
         "discord.js": "14.27.0",
       },
     },
+    "adapters/discord-user": {
+      "name": "@tsuba/discord-user",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tsuba/serve-kit": "workspace:*",
+      },
+    },
     "adapters/slack": {
       "name": "@tsuba/slack",
       "version": "0.0.0",
@@ -100,6 +107,8 @@
     "@sapphire/snowflake": ["@sapphire/snowflake@3.5.5", "", {}, "sha512-xzvBr1Q1c4lCe7i6sRnrofxeO1QTP/LKQ6A6qy0iB4x5yfiSfARMEQEghojzTNALDTcv8En04qYNIco9/K9eZQ=="],
 
     "@tsuba/discord": ["@tsuba/discord@workspace:adapters/discord"],
+
+    "@tsuba/discord-user": ["@tsuba/discord-user@workspace:adapters/discord-user"],
 
     "@tsuba/serve-kit": ["@tsuba/serve-kit@workspace:packages/serve-kit"],
 

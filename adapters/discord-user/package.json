@@ -1,0 +1,9 @@
+{
+  "name": "@tsuba/discord-user",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tsuba/serve-kit": "workspace:*"
+  }
+}
