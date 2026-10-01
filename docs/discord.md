@@ -1,0 +1,101 @@
+# Discord 어댑터
+
+**봇 계정**으로 동작합니다(`account.kind: "bot"`). 사람 계정 토큰으로 클라이언트를 흉내 내는
+방식(셀프봇, mautrix-discord 의 퍼펫팅)은 Discord 약관 위반이라 만들지 않습니다. 그래서 이
+어댑터는 **봇을 초대한 서버**의 채널만 보고, 봇이 쓴 글은 봇 이름으로 올라갑니다.
+
+## 기반: discord.js
+
+[`discord.js`](https://github.com/discordjs/discord.js) 14.27.0 (Apache-2.0)을 씁니다.
+게이트웨이 재연결·재개, REST 요청 한도(버킷), 채널·역할·권한 캐시를 맡기고, Bun 공식 문서에
+[discord.js 안내](https://bun.com/guides/ecosystem/discordjs)가 있습니다. 음성(`@discordjs/voice`)은
+Bun 에서 문제가 알려져 있지만 쓰지 않습니다. 검토한 대안은 [`references.md`](references.md)에 있습니다.
+
+- `rest.retries: 0` — 결과를 모르는 쓰기를 라이브러리가 다시 보내지 않게 합니다. 429 는 Discord 가
+  처리하지 않았다는 뜻이라 discord.js 가 기다렸다가 보내는 것은 중복이 아닙니다.
+- 타입 검사는 `skipLibCheck` 없이 통과합니다. `@sapphire/shapeshift` 가 @types/node 26 에서 빠진
+  `util.InspectOptionsStylized` 를 이름으로 쓰기 때문에 `src/environment.d.ts` 가 그 하나를 보충합니다.
+
+## 무엇이 방인가
+
+Discord 의 서버(길드)에는 채널이 여럿 있습니다. 그중 **일반 텍스트 채널(`GUILD_TEXT`, 0)** 만
+방이 됩니다. 봇에게 채널 보기(`VIEW_CHANNEL`)와 기록 읽기(`READ_MESSAGE_HISTORY`)가 둘 다 있어야
+합니다.
+
+| 채널 | 방? | 이유 |
+| --- | --- | --- |
+| 텍스트 채널 | 예 | 일반 대화방 |
+| 공지(announcement) 채널 | 아니요 | 방송용, 팔로우·크로스포스트 |
+| 포럼·미디어 채널, 스레드 | 아니요 | 방이 아니라 글타래 (계약의 `threads.read` 는 아직 예약) |
+| 음성·스테이지 채널의 채팅 | 아니요 | 통화에 딸린 채팅 |
+| 그룹 DM | 아니요 | Discord 가 봇을 그룹 DM 에 넣지 않음 |
+| 봇과의 1:1 DM | 아니요 | 봇은 DM 목록을 조회할 수 없음 |
+
+- 제목은 `서버 이름 · #채널 이름` 입니다. 서버가 여럿이면 `#general` 이 여러 개라서입니다.
+- `kind` 는 `group` 입니다. 봇에게 보내기 권한이 없으면 그 방은
+  `"features": {"messages.send": false}`, 반응 권한이 없으면 `"reactions.send": false` 를 가집니다.
+- **안 읽음 수는 늘 0입니다.** Discord 는 봇의 읽음 상태를 두지 않습니다(봇은 ack 할 수 없음).
+  그래서 `read.mark` 도 신고하지 않고, saya 의 배지는 Discord 에 붙지 않습니다.
+- `lastActivityAt` 은 채널의 마지막 메시지 id(snowflake)에 들어 있는 시각입니다. 요청을 더 하지
+  않습니다. 미리보기(`lastMessage`)는 어댑터가 켜진 뒤 받은 메시지만 있습니다.
+- 목록은 게이트웨이가 채워 둔 캐시에서 만들므로 방 목록 요청이 Discord 로 가지 않습니다.
+- 최근 활동순, 최대 500개입니다.
+
+## 구현된 기능 신고
+
+| 기능 | 값 | 구현 |
+| --- | --- | --- |
+| `rooms.list` | `{}` | 위 "무엇이 방인가" |
+| `messages.read` | `paging: before-id`, `maxLimit: 100` | `GET /channels/{id}/messages` (Discord 의 한 번 상한 100) |
+| `messages.stream` | `resume: cursor`, `events: [message.edited, message.deleted, reactions.updated]` | 게이트웨이 이벤트, 이어 읽기는 `after` 로 페이지 단위 |
+| `messages.send` | `maxLength: 2000`, `receipt: stored` | 문서상 한계 2000자. **단위(코드 포인트/UTF-16)는 아직 측정하지 않음** — 넘으면 Discord 가 400 으로 거절하고 아무것도 보내지지 않습니다 |
+| `messages.reply` | `{}` | `message_reference`, 원문이 없으면 실패(`failIfNotExists`) |
+| `messages.edit` | `maxLength: 2000` | 봇 자신의 메시지만. Discord 는 수정 시간 제한이 없음 |
+| `messages.delete` | `forEveryone: true` | 봇 자신의 메시지, 또는 메시지 관리 권한이 있으면 남의 메시지 |
+| `reactions.read` | `{}` | 유니코드 이모지 반응만(서버 커스텀 이모지는 뺌) |
+| `reactions.send` | `{}` | 지금 내 반응과 원하는 목록의 차이만큼 빼고 더함. Discord 는 사람당 개수 제한이 없음(메시지당 종류 20개 제한은 `403 FORBIDDEN`) |
+| `attachments.read` | `{}` | 메시지를 다시 읽어 서명된 CDN 주소를 새로 받고, `cdn.discordapp.com`·`media.discordapp.net` 에서만 받아 흘려 보냄 |
+
+보내는 글은 `@everyone`·`@here`·역할을 부르지 않습니다(`allowedMentions: users`). 쓰기는 serve-kit
+의 줄 하나를 함께 씁니다.
+
+## 이벤트
+
+- `message.edited`: `messageUpdate`. 어댑터가 켜지기 전 메시지는 일부만 오므로 다시 읽어 보냅니다.
+- `message.deleted`: `messageDelete`, `messageDeleteBulk`. 채널을 늘 알려 주므로 모두 방에 놓입니다.
+- `reactions.updated`: 반응 추가·제거·이모지 전체 제거 때 메시지를 다시 읽어 Discord 의 개수로
+  보냅니다. 반응 전체 제거는 `[]` 입니다.
+- 이어 읽기는 새 메시지만 다시 보냅니다(계약 규칙).
+
+## 오류 대응
+
+| Discord | 계약 |
+| --- | --- |
+| 401 (토큰 무효·재발급됨) | `503 REAUTH_REQUIRED` — 새 토큰을 넣고 다시 시작 |
+| 403 (권한 없음, 50001·50013 등), 30010 (반응 종류 20개 초과) | `403 FORBIDDEN` |
+| 404 (없는 채널·메시지, 10003·10008) | `404 NOT_FOUND` |
+| 429 | `429 RATE_LIMITED` |
+| 그 밖의 400 (본문 오류, 없는 이모지 등) | `400 INVALID_REQUEST` |
+| 그 외 | `500 INTERNAL` — 쓰기에서는 결과를 모름, 재시도 없음 |
+
+## 준비 (사람이 직접)
+
+1. <https://discord.com/developers/applications> 에서 **New Application** → **Bot**.
+2. **Privileged Gateway Intents** 에서 **Message Content Intent** 를 켭니다(없으면 글 내용이 빈 문자열로 옴).
+3. **Reset Token** 으로 봇 토큰을 받아 `.env` 의 `TSUBA_DISCORD_TOKEN` 에 넣습니다. 이 토큰은 봇
+   계정 전체 권한이라 비밀번호로 다룹니다.
+4. **OAuth2 → URL Generator** 에서 scope `bot`, 권한 *View Channels, Send Messages, Read Message
+   History, Add Reactions* 를 골라 만든 주소로 봇을 서버에 초대합니다. 방으로 보일 채널에 봇의
+   보기 권한이 있어야 합니다.
+
+```sh
+bun adapters/discord/src/cli.ts check   # 서버 수, 방 수, 읽기 전용 방 수만 출력
+bun adapters/discord/src/cli.ts serve   # 127.0.0.1:8792
+```
+
+- HTTP 토큰은 `TSUBA_DISCORD_HTTP_TOKEN`(없으면 `TSUBA_TOKEN`), 포트 `TSUBA_DISCORD_PORT`(기본
+  8792), 주소 `TSUBA_HOST`. Telegram 어댑터(8790)와 같은 저장소·같은 `.env` 에서 나란히 돌 수 있습니다.
+
+## 하지 않는 것
+
+사람 계정 자동화(셀프봇), 봇이 볼 수 없는 채널의 기록 수집, 대량 발송.

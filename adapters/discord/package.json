@@ -1,0 +1,13 @@
+{
+  "name": "@tsuba/discord",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tsuba/serve-kit": "workspace:*",
+    "discord.js": "14.27.0"
+  },
+  "scripts": {
+    "serve": "bun src/cli.ts serve"
+  }
+}

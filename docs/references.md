@@ -19,6 +19,8 @@ tsuba 를 시작하기 전에(2026-10-01) 검토한 것들입니다. 외부 저�
 
 | 프로젝트 | 상태 | 가져올 것 | 가져오지 않을 것 |
 | --- | --- | --- | --- |
+| [discord.js](https://github.com/discordjs/discord.js) (TS, Apache-2.0) | 활발, 14.27.0 (2026-10-01 확인) | **Discord 어댑터의 기반.** 게이트웨이 재연결·재개, REST 요청 한도, 채널·역할 권한 계산(`permissionsFor`), Bun 공식 안내 있음 | 기본 REST 재시도(결과 모르는 쓰기를 다시 보냄) → `rest.retries: 0` |
+| [mautrix-discord](https://github.com/mautrix/discord) (Go, AGPL) | 활발 | 방·메시지·반응 대응 관계의 참고 | 사람 계정 토큰으로 접속하는 퍼펫팅 — tsuba 의 Discord 는 봇 계정만 |
 | [mtcute](https://github.com/mtcute/mtcute) (TS, MIT) | 활발, `@mtcute/bun` 0.32.3 (2026-09-25) | **Telegram 어댑터의 기반.** 공식 Bun 패키지(`bun:sqlite`), `getDifference`/`getChannelDifference` 로 업데이트 공백 메우기(`updates.catchUp`), 전화번호·코드·2FA·QR 로그인 | 메시지 기록 DB 는 없음 → tsuba 가 자기 정규화 저장소와 방별 재동기화를 가져야 함 |
 | [mautrix-go bridgev2](https://github.com/mautrix/go) (Go, MPL-2.0) | 활발 (2026-09-30) | **기능 어휘와 한계의 모델.** 네트워크 전체 기본값과 방별 실효 기능(`event.RoomFeatures`)의 분리, `max_text_length`·`edit_max_age`·`delete_for_me`·`reaction_count`·파일 종류별 한계, 기능 집합의 해시(revision) | Matrix 이벤트 이름, 브리지 내부 운영 플래그. 코드는 옮기지 않고 설계만 빌림(MPL) |
 | [Texts platform-sdk](https://github.com/TextsHQ/platform-sdk) (TS, MIT) | 2024-11 이후 멈춤 | 방·메시지·참여자 정규화 모델, `upsert`/`update`/`delete` 변경 이벤트. 그들의 `Thread` 는 *대화방* 이므로 tsuba 에서는 `Room` 이고, 진짜 스레드는 따로 둠 | 긍정·부정 플래그가 섞인 `Attribute` (없는 것의 뜻이 플래그마다 다름), Electron/React 의존 부분 |

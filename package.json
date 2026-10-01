@@ -9,7 +9,7 @@
     "adapters/*"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram && tsc --noEmit -p adapters/discord",
     "lint": "biome check .",
     "test": "bun test"
   },
