@@ -1,6 +1,11 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import contract from "../contract/openapi.json";
-import type { Capabilities } from "../packages/serve-kit/src/index";
+import type {
+  AdapterBackend,
+  Capabilities,
+  Message,
+  Room,
+} from "../packages/serve-kit/src/index";
 
 export const TOKEN = "synthetic-test-token-0123456789";
 
@@ -15,6 +20,29 @@ export const sample: Capabilities = {
     "x-example.pins": {},
   },
 };
+
+export const room: Room = {
+  id: "example:room",
+  title: "Synthetic room",
+  kind: "group",
+  unread: 0,
+};
+export const message: Message = {
+  id: "2",
+  roomId: room.id,
+  sender: "Synthetic sender",
+  text: "Synthetic text",
+  kind: "text",
+  sentAt: "2026-01-01T00:00:00.000Z",
+  fromMe: false,
+};
+export function fakeBackend(): AdapterBackend {
+  return {
+    listRooms: async () => ({ rooms: [room], complete: true }),
+    readMessages: async () => ({ messages: [message], hasEarlier: false }),
+    send: async (roomId, text) => ({ ...message, roomId, text, fromMe: true }),
+  };
+}
 
 const ajv = new Ajv2020({ strict: false });
 ajv.addSchema(contract, "contract");

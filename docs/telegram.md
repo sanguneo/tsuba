@@ -1,8 +1,9 @@
-# Telegram 어댑터 계획
+# Telegram 어댑터
 
 첫 어댑터입니다. **사용자 본인 계정의 클라이언트**이고, 봇이 아닙니다
-(`account.kind: "user"`). 아직 코드는 없습니다. 이 문서의 "확인 필요" 표시는 구현
-전에 실제로 재거나 문서에서 확인해야 하는 값입니다.
+(`account.kind: "user"`). 계약 0.2.0의 방 목록, 메시지 읽기, SSE 이어 읽기,
+텍스트 전송을 구현했습니다. 합성 데이터와 로컬 HTTP로 검증하며, 실제 계정에서의
+새 구현 검증은 운영자가 별도로 합니다.
 
 ## 기반: mtcute
 
@@ -32,48 +33,36 @@
 
 ```sh
 bun adapters/telegram/src/cli.ts login     # 사람이 터미널에서 직접: 전화번호, 코드, 2FA
-bun adapters/telegram/src/cli.ts serve --port 8790
+TSUBA_PORT=8790 bun adapters/telegram/src/cli.ts serve
 ```
 
 - `api_id`/`api_hash` 는 사용자가 my.telegram.org 에서 직접 발급해
   `TSUBA_TELEGRAM_API_ID`/`TSUBA_TELEGRAM_API_HASH` 로 줍니다. 저장소에 넣지 않습니다.
-- 세션은 `sessions/telegram.sqlite` 이고 `.gitignore` 에 들어 있습니다. **이 파일은
+- 세션은 `sessions/telegram.session` 이고 `.gitignore` 에 들어 있습니다. **이 파일은
   계정 전체에 접근할 수 있으므로** 토큰보다 더 강한 비밀번호로 다룹니다.
 - 로그인은 사람이 하는 것입니다. 코드를 자동으로 받아 넣는 로그인 자동화는 만들지
   않습니다.
 - HTTP 토큰은 `TSUBA_TOKEN`(16자 이상), 기본 바인딩은 `127.0.0.1` 입니다(serve-kit).
+  포트와 주소는 `TSUBA_PORT`(기본 8790), `TSUBA_HOST`로 지정합니다.
 - Telegram 이 막힌 네트워크에서는 `TSUBA_TELEGRAM_PROXY` 로 프록시를 지정합니다
   (`socks5://`, `http://`, `tg://proxy` MTProxy 링크; mtcute `proxyTransportFromUrl`).
   2026-10-01 개발 PC 에서 확인: 직접 연결로는 Telegram DC 와 `*.telegram.org` 가 모두
   시간 초과였고(일반 TCP·난독화 TCP·WebSocket 모두), `ssh -D` SOCKS5 를 거치면 인증 키
   교환과 `help.getNearestDc` 가 성공했습니다. 템플릿은 `.env.example` 입니다.
 
-## 기능 신고 초안
+## 구현된 기능 신고
 
-| 기능 | 값 | 근거 / 확인 필요 |
+| 기능 | 값 | 구현 |
 | --- | --- | --- |
-| `rooms.list` | `{}` | 대화 목록 |
-| `messages.read` | `paging: before-id`, `maxLimit: 100` | `messages.getHistory` 의 `offset_id`. 한 번에 100개 상한은 **확인 필요** |
+| `rooms.list` | `{}` | `iterDialogs`, 보관함 포함. 501번째 대화로 초과 여부를 확인하고 최대 500개 반환 |
+| `messages.read` | `paging: before-id`, `maxLimit: 100` | `getHistory`의 offset으로 이전 페이지, 오래된 순서로 반환. 어댑터의 읽기 상한은 100개 |
 | `messages.stream` | `resume: cursor` | 아래 "이어 읽기" |
-| `messages.send` | `maxLength: 4096`, `receipt: stored` | 전송 결과로 저장된 메시지 id 가 옴. **4096 은 코드 포인트**(아래 측정) — 계약과 같음. 4097 은 `MESSAGE_TOO_LONG` → `400 INVALID_REQUEST` |
-| `messages.reply` | `{}` | |
-| `messages.edit` | `maxAgeSeconds` 생략? | 사용자 메시지의 편집 시간 제한 **확인 필요** |
-| `messages.delete` | `forEveryone: true` | 개인 대화는 양쪽 삭제 가능. 그룹은 권한에 따라 다름 → 방별 기능 필요 |
-| `reactions.read` / `reactions.send` | `maxPerMessage` | 프리미엄 여부로 달라짐 → 시작할 때 계정 상태로 계산. 수치 **확인 필요** |
-| `read.mark` | `{}` | `readHistory` |
-| `typing.send` | `{}` | `setTyping` |
-| `threads.read` | `{}` | 포럼 토픽과 채널 댓글. 방과 스레드를 섞지 않음 |
-| `attachments.read` / `attachments.send` | `maxBytes`, `caption: true` | 프리미엄 여부로 상한이 다름. 수치 **확인 필요** |
+| `messages.send` | `maxLength: 4096`, `receipt: stored` | `sendText`가 반환한 저장 메시지. 사용자 경로에서 측정한 4096 코드 포인트 |
 
-신고 값은 시작할 때 한 번 계산하고, 계정 상태(프리미엄 등)가 바뀌면 다시 계산합니다.
-그러면 `revision` 이 바뀝니다.
-
-## 방마다 다른 기능
-
-Telegram 은 방마다 할 수 있는 일이 다릅니다. 관리자가 아닌 채널은 읽기 전용이고,
-슬로우 모드가 있으며, 그룹마다 권한도 다릅니다. 그래서 계약 0.2.0 에서 `Room` 을
-들일 때, 방이 전체 기능과 다를 때만 자기 실효 기능(`features`)을 함께 싣게 합니다
-(mautrix 의 네트워크 기본값 + 방별 `RoomFeatures` 구조).
+나머지 기능은 신고하지 않습니다. 방별 권한 차이는 Telegram의 오류로 답하며,
+계약 0.2.0에는 방별 기능 필드가 없습니다. 텍스트 전송은 한 번에 하나씩,
+실행 중 요청을 포함해 최대 4개만 받아들이며 5번째는 즉시 429입니다.
+불확실한 전송을 자동 재시도하지 않도록 mtcute의 RPC 재시도 미들웨어도 끕니다.
 
 ## 이어 읽기 (SSE 커서)
 
@@ -84,31 +73,24 @@ Telegram 은 서버에 대화 기록이 있으므로, 카카오 코어처럼 로
   `cursor` 이벤트로 보냅니다(kanao 와 같은 규칙).
 - 재접속하면 커서에 이름이 있는 방마다 그 id 이후를 서버에서 페이지 단위로 읽어 보낸
   뒤 실시간으로 넘어갑니다.
-- 실행 중 생긴 공백은 mtcute 의 catch-up 이 메웁니다. 너무 긴 공백
-  (`differenceTooLong`)은 그 방을 다시 동기화하라는 이벤트로 알립니다. 조용히 건너뛰지
-  않습니다.
-- 이어 읽을 수 없는 커서는 거절합니다. 지금부터 시작하는 것으로 바꿔치지 않습니다.
+- 이력 조회 전에 업데이트를 구독해 조회 중 들어온 메시지를 버퍼링하고, 이력과
+  겹치는 메시지를 제거한 뒤 실시간으로 넘어갑니다. 실행 중 catch-up은 mtcute가 처리합니다.
+- 이어 읽을 수 없는 커서(삭제되었거나 접근할 수 없는 기준 메시지 포함)는 `error`로
+  거절하고 스트림을 닫습니다. 지금부터 시작하는 것으로 바꿔치지 않습니다.
+- 최대 8개 연결, 조용할 때 25초마다 `ping`. 연결 종료나 서버 종료 시 구독을 해제합니다.
 
 ## 오류 대응
 
 | Telegram | 계약 |
 | --- | --- |
-| `FLOOD_WAIT_X` | `429 RATE_LIMITED`. 자동 재시도는 읽기만 하고, 전송은 하지 않음 |
-| 세션 만료·해지 (`AUTH_KEY_UNREGISTERED` 등) | `503`, 다시 `login` 하라는 코드(계약에 추가) |
-| 없는 방·메시지 | `404` |
-| 같은 이름의 방 여러 개 | `409`, 후보 목록을 붙여서 거절 |
+| `FLOOD_WAIT_X` / 슬로우 모드 | `429 RATE_LIMITED`, 자동 재시도 없음 |
+| 없는 peer / 잘못된 peer·channel id / 접근 불가 채널 | `404 NOT_FOUND` |
+| 그 외 오류 (세션 오류 포함) | `500 INTERNAL`, 계정 정보가 없는 일반 메시지 |
+| 선언하지 않은 기능의 경로 | 인증 후 `501 NOT_SUPPORTED` |
 
-## 만드는 순서
-
-saya 와 같은 이유로 이 순서입니다. 앞 단계 없이는 뒤 단계를 확인할 수 없고, 전송이
-마지막인 이유는 틀리면 남의 대화방에 글이 나가기 때문입니다.
-
-1. **스파이크** — Bun + mtcute 로그인, 대화 목록, 업데이트 수신.
-2. **계약 0.2.0** — `Room`, `GET /rooms`, 방별 기능. 가짜 Telegram 포트(401·429·503·깨진
-   응답을 낼 수 있는 것)로 테스트.
-3. **메시지 읽기** — `before-id` 페이징.
-4. **스트림** — SSE, 방별 커서, 재동기화 이벤트.
-5. **전송** — 답장 포함, `receipt: stored`.
+방과 메시지는 이름이 아닌 문자열 id로 지정합니다. `/stream`의 반복 `since`는
+`<roomId>:<messageId>`이며 마지막 콜론에서 나눕니다. 모든 JSON 봉투와 SSE
+페이로드는 테스트에서 고정된 계약 스키마로 검증합니다.
 
 ## 하지 않는 것
 

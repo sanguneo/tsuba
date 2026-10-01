@@ -7,9 +7,13 @@ import {
   serve,
   TokenError,
 } from "../packages/serve-kit/src/index";
-import { sample, schema, TOKEN } from "./fixtures";
+import { fakeBackend, sample, schema, TOKEN } from "./fixtures";
 
-const { handle } = createHandler({ token: TOKEN, capabilities: sample });
+const { handle } = createHandler({
+  token: TOKEN,
+  capabilities: sample,
+  backend: fakeBackend(),
+});
 const bearer = { authorization: `Bearer ${TOKEN}` };
 
 async function call(path: string, init: RequestInit = {}) {
@@ -40,8 +44,8 @@ test("/capabilities refuses a missing, wrong or malformed token", async () => {
 });
 
 test("an unknown route is refused like a protected one, then not found", async () => {
-  expect((await call("/rooms")).response.status).toBe(401);
-  const { response, body } = await call("/rooms", { headers: bearer });
+  expect((await call("/unknown")).response.status).toBe(401);
+  const { response, body } = await call("/unknown", { headers: bearer });
   expect(response.status).toBe(404);
   expect(body.error.code).toBe("NOT_FOUND");
 });
@@ -113,7 +117,12 @@ test("a weak token is refused before anything listens", () => {
 });
 
 test("serves over real HTTP on loopback by default", async () => {
-  const server = serve({ token: TOKEN, capabilities: sample, port: 0 });
+  const server = serve({
+    token: TOKEN,
+    capabilities: sample,
+    backend: fakeBackend(),
+    port: 0,
+  });
   try {
     expect(server.hostname).toBe("127.0.0.1");
     const response = await fetch(new URL("/capabilities", server.url), {

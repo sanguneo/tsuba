@@ -6,10 +6,14 @@ import {
   FEATURE_IDS,
   STATUS,
 } from "../packages/serve-kit/src/index";
-import { sample, TOKEN } from "./fixtures";
+import { fakeBackend, sample, TOKEN } from "./fixtures";
 
 test("every documented route is routed, and nothing else is", () => {
-  const { routes } = createHandler({ token: TOKEN, capabilities: sample });
+  const { routes } = createHandler({
+    token: TOKEN,
+    capabilities: sample,
+    backend: fakeBackend(),
+  });
   expect([...routes].sort()).toEqual(Object.keys(contract.paths).sort());
 });
 

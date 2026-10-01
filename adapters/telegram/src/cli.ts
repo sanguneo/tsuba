@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { proxyTransportFromUrl, TelegramClient } from "@mtcute/bun";
 import { type Capabilities, serve } from "@tsuba/serve-kit";
 import adapterPackage from "../package.json";
+import { telegramBackend } from "./backend";
 
 /**
  * The spike from docs/telegram.md: can mtcute on Bun sign a person in, list
@@ -38,6 +39,8 @@ function createClient(): TelegramClient {
     apiHash: required("TSUBA_TELEGRAM_API_HASH"),
     storage: SESSION,
     updates: { catchUp: true },
+    // Do not let mtcute retry uncertain sends or hide FLOOD_WAIT behind a delay.
+    network: { middlewares: [] },
     ...(proxy ? { transport: proxyTransportFromUrl(proxy) } : {}),
   });
 }
@@ -115,13 +118,18 @@ async function measureLength(tg: TelegramClient) {
   }
 }
 
-// Only what this adapter performs end to end is declared. Nothing is yet:
-// rooms, reads, the stream and sending arrive with contract 0.2.0.
+// Declare only the four features implemented end to end.
 const CAPABILITIES: Capabilities = {
   provider: { id: "telegram", name: "Telegram" },
   account: { kind: "user" },
   adapter: { name: "tsuba-telegram", version: adapterPackage.version },
-  features: {},
+  features: {
+    "rooms.list": {},
+    "messages.read": { paging: "before-id", maxLimit: 100 },
+    "messages.stream": { resume: "cursor" },
+    // Measured on the user path: 4096 Unicode code points, not UTF-16 units.
+    "messages.send": { maxLength: 4096, receipt: "stored" },
+  },
 };
 
 async function serveForever(tg: TelegramClient) {
@@ -131,6 +139,7 @@ async function serveForever(tg: TelegramClient) {
     port: Number(process.env.TSUBA_PORT ?? 8790),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     capabilities: CAPABILITIES,
+    backend: telegramBackend(tg),
   });
   console.log(`tsuba-telegram listening on ${server.hostname}:${server.port}`);
   await new Promise<void>((resolve) => {

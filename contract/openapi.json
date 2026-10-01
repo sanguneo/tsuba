@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tsuba — messenger adapter contract",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
-    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows.\n\n**Consumers must ignore keys they do not know.** Adding a key, a feature id or an error code is not breaking; removing or renaming one, or changing what an existing one means, is, and lands in a minor version with the reason in the changelog.\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. An enum value a client does not know means the least that field can mean: treat it as the first value listed.\n\n**Security posture.** A shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header.\n\nThis version covers only the routes that are implemented: `/health` and `/capabilities`. Rooms, message reads, the stream and sending arrive with the code that answers them.",
+    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows.\n\n**Consumers must ignore keys they do not know.** Adding a key, a feature id or an error code is not breaking; removing or renaming one, or changing what an existing one means, is, and lands in a minor version with the reason in the changelog.\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. An enum value a client does not know means the least that field can mean: treat it as the first value listed.\n\n**Security posture.** A shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header.\n\nEvery documented route is routed by every adapter. A route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`; an adapter declares a feature exactly when it performs it end to end.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -53,6 +53,366 @@
           },
           "401": {
             "description": "`UNAUTHORIZED`: missing or wrong bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rooms": {
+      "get": {
+        "operationId": "rooms",
+        "summary": "The conversations the account can see, as its own client lists them.",
+        "description": "Feature `rooms.list`. Rooms come in the order the messenger's own client shows them (pinned first, then by latest activity). An adapter may stop at a cap of its own; `complete: false` says it did and that more rooms exist.",
+        "responses": {
+          "200": {
+            "description": "The rooms.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomsAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: the messenger asked the adapter to slow down; nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`INTERNAL`: the adapter failed; the message says nothing about the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`NOT_SUPPORTED`: this adapter does not declare `rooms.list`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/messages": {
+      "get": {
+        "operationId": "messages",
+        "summary": "A room's messages, oldest first.",
+        "description": "Feature `messages.read`. Without `before`, the newest `limit` messages; with it, the `limit` messages just before that id. `hasEarlier` says whether older ones exist. `before` paging is answered only when the feature declares `paging: before-id`.",
+        "parameters": [
+          {
+            "name": "roomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50
+            },
+            "description": "At most the feature's `maxLimit`; more is a 400."
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "A message id from an earlier answer."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The messages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`INVALID_REQUEST`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such room.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`INTERNAL`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`NOT_SUPPORTED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stream": {
+      "get": {
+        "operationId": "stream",
+        "summary": "New messages as Server-Sent Events.",
+        "description": "Feature `messages.stream`. The same shape the KakaoTalk cores use: `ready` once, then `message` per message with a `cursor` after the messages it covers, `ping` while quiet, and `error` once before the stream ends. With `resume: cursor`, a reconnection hands back the last cursor as repeated `since=<roomId>:<messageId>` (split at the last colon) and the adapter sends what each named room received after that id before going live; a room not named starts from now. A cursor the adapter cannot honour is refused, never downgraded to now.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An event stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`INVALID_REQUEST`: a malformed `since`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`NOT_SUPPORTED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`BUSY`: the adapter already holds as many streams as it will (8).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sse-events": {
+          "ready": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamReady"
+            }
+          },
+          "message": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamMessage"
+            }
+          },
+          "cursor": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamCursor"
+            }
+          },
+          "ping": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamPing"
+            }
+          },
+          "error": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
+    "/send": {
+      "post": {
+        "operationId": "send",
+        "summary": "Send text to a room.",
+        "description": "Feature `messages.send`. Sends are one at a time per adapter; at most four wait, and a fifth is `429 RATE_LIMITED` having changed nothing. With `receipt: stored` the answer carries the message the messenger stored. A send whose outcome is uncertain is never retried by the adapter.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`INVALID_REQUEST`: empty, or longer than `maxLength` code points.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such room.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: the line is full or the messenger asked to slow down.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`INTERNAL`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`NOT_SUPPORTED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -365,6 +725,268 @@
         "patternProperties": {
           "^x-[a-z][a-z0-9-]*\\.": {
             "type": "object"
+          }
+        }
+      },
+      "Room": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "kind",
+          "unread"
+        ],
+        "description": "A conversation. A key that does not apply is absent, never null or false.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque. Compare, store and send it back as the string it is; never as a number."
+          },
+          "title": {
+            "type": "string",
+            "description": "What the messenger's own client shows as the room's name."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "group",
+              "channel"
+            ],
+            "description": "`direct`: one other account (person or bot). `group`: several members who can all write. `channel`: a broadcast most members only read."
+          },
+          "unread": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The messenger's own unread count for this account."
+          },
+          "lastActivityAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the newest message arrived."
+          },
+          "lastMessage": {
+            "type": "object",
+            "required": [
+              "text",
+              "fromMe"
+            ],
+            "description": "The newest message, for a list preview.",
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "At most its first 200 code points. Empty when the message has no text (a photo, a sticker)."
+              },
+              "fromMe": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "RoomsAnswer": {
+        "type": "object",
+        "required": [
+          "ok",
+          "rooms",
+          "complete"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "rooms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Room"
+            }
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "`false` when the adapter stopped at its own cap and more rooms exist."
+          }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "id",
+          "roomId",
+          "sender",
+          "text",
+          "kind",
+          "sentAt",
+          "fromMe"
+        ],
+        "description": "A key that does not apply is absent.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque; send it back as is."
+          },
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "senderId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sender": {
+            "type": "string",
+            "description": "The name the messenger shows for the sender (a channel's own title for its posts)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Empty when the message carries no text."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "text",
+              "media",
+              "service"
+            ],
+            "description": "`media`: a photo, file, sticker, voice and so on, with `text` its caption. `service`: a join, a title change and the like."
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "editedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fromMe": {
+            "type": "boolean"
+          },
+          "replyTo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The id of the message this replies to."
+          }
+        }
+      },
+      "MessagesAnswer": {
+        "type": "object",
+        "required": [
+          "ok",
+          "messages",
+          "hasEarlier"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            }
+          },
+          "hasEarlier": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Cursor": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Room id to the id of the last message the stream sent for it."
+      },
+      "StreamReady": {
+        "type": "object",
+        "required": [
+          "ok",
+          "resumed",
+          "cursor"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "resumed": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/Cursor"
+          }
+        }
+      },
+      "StreamMessage": {
+        "type": "object",
+        "required": [
+          "ok",
+          "message"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "message": {
+            "$ref": "#/components/schemas/Message"
+          }
+        }
+      },
+      "StreamCursor": {
+        "type": "object",
+        "required": [
+          "ok",
+          "cursor"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/Cursor"
+          }
+        }
+      },
+      "StreamPing": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        }
+      },
+      "SendRequest": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "text"
+        ],
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "SendAnswer": {
+        "type": "object",
+        "required": [
+          "ok",
+          "message"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "message": {
+            "$ref": "#/components/schemas/Message"
           }
         }
       }
