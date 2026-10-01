@@ -101,7 +101,8 @@ async function measureLength(tg: TelegramClient) {
     try {
       const sent = await tg.sendText("me", text);
       await tg.deleteMessagesById("me", [sent.id]);
-      console.log(label, "-> accepted (deleted)");
+      const kept = [...sent.text].length;
+      console.log(label, `-> accepted, stored ${kept} code points (deleted)`);
     } catch (error) {
       console.log(label, "->", String(error).slice(0, 120));
     }

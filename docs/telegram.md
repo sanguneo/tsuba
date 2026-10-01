@@ -13,8 +13,20 @@
 전화번호·코드·2FA·QR 로그인을 지원합니다. GramJS 는 보관됐고, tdl 은 Bun 안정성을
 보장하지 않습니다.
 
-**첫 작업은 스파이크입니다.** Bun 1.4.2 / Windows 에서 로그인 → 대화 목록 → 업데이트
-수신이 실제로 되는지 확인하고, 안 되면 이 선택을 다시 합니다.
+**스파이크 결과 (2026-10-01, Bun 1.4.2 / Windows 11, `@mtcute/bun` 0.32.3, SOCKS5 경유).**
+`adapters/telegram/src/cli.ts` 로 실제 계정에서 확인했습니다. 출력은 개수와 종류뿐입니다.
+
+- 로그인(전화번호·코드, 사람이 터미널에서 입력) 성공, 세션은 `sessions/telegram.session`.
+- `iterDialogs` 로 대화 22개를 읽음: user 12, group 5, supergroup 1, channel 4. mtcute 의
+  `chatType` 에는 `gigagroup`·`monoforum`·`community` 도 있으므로 방 종류는 열린 집합으로 다룹니다.
+- `onNewMessage` 로 들어오는 메시지 하나를 받음.
+- 길이 한계(저장한 메시지, 보낸 것은 즉시 삭제): `a`×4096 수락, ×4097 `MESSAGE_TOO_LONG`;
+  이모지(U+1F600)×4096 — UTF-16 으로 8192 단위 — 수락되고 4096 코드 포인트 그대로 저장,
+  ×4097 `MESSAGE_TOO_LONG`. **한계는 코드 포인트입니다.** Bot API 에서의 같은 결론
+  ([측정 글](https://charliemorrison.dev/blog/telegram-4096-character-limit/))이 사용자 경로에서도 성립합니다.
+  서식(entity)의 offset/length 는 별개로 UTF-16 단위입니다
+  ([문서](https://core.telegram.org/api/entities)).
+- 이 PC 의 직접 연결로는 Telegram 이 막혀 있어 프록시가 필요했습니다(아래 "실행과 비밀").
 
 ## 실행과 비밀
 
@@ -43,7 +55,7 @@ bun adapters/telegram/src/cli.ts serve --port 8790
 | `rooms.list` | `{}` | 대화 목록 |
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | `messages.getHistory` 의 `offset_id`. 한 번에 100개 상한은 **확인 필요** |
 | `messages.stream` | `resume: cursor` | 아래 "이어 읽기" |
-| `messages.send` | `maxLength: 4096`, `receipt: stored` | 전송 결과로 저장된 메시지 id 가 옴. 4096 이 UTF-16 단위인지 코드 포인트인지 **확인 필요** — 계약은 코드 포인트로 적었으므로 다르면 계약을 고칩니다 |
+| `messages.send` | `maxLength: 4096`, `receipt: stored` | 전송 결과로 저장된 메시지 id 가 옴. **4096 은 코드 포인트**(아래 측정) — 계약과 같음. 4097 은 `MESSAGE_TOO_LONG` → `400 INVALID_REQUEST` |
 | `messages.reply` | `{}` | |
 | `messages.edit` | `maxAgeSeconds` 생략? | 사용자 메시지의 편집 시간 제한 **확인 필요** |
 | `messages.delete` | `forEveryone: true` | 개인 대화는 양쪽 삭제 가능. 그룹은 권한에 따라 다름 → 방별 기능 필요 |
