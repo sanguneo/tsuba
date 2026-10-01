@@ -213,7 +213,10 @@ export function discordBackend(client: Client<true>): AdapterBackend {
 
   function message(channel: TextChannel, id: string) {
     const messageId = snowflake(id, "message");
-    return discord(() => channel.messages.fetch(messageId));
+    // Always ask Discord: the cache can trail a write this adapter just made.
+    return discord(() =>
+      channel.messages.fetch({ message: messageId, force: true }),
+    );
   }
 
   return {
