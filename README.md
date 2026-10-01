@@ -9,7 +9,7 @@
 
 ## 상태
 
-계약 0.2.3의 서버와 첫 어댑터를 구현했습니다.
+계약 0.2.4의 서버와 첫 어댑터를 구현했습니다.
 
 - `contract/openapi.json` — `/health`, `/capabilities`, `/rooms`, `/messages`, `/media`, `/stream`, `/send`, `/edit`, `/delete`, `/react`, `/read`
 - `contract/CHANGELOG.md` — 계약 버전마다 바뀐 것과 이유

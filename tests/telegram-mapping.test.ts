@@ -123,6 +123,26 @@ test("message mapping has string ids, names, ISO dates and no null optionals", (
   expect(edited.fromMe).toBe(true);
 });
 
+test("album members keep separate messages with the same decimal group id", () => {
+  for (const decimal of ["1234567890123456789", "-1234567890123456789", "0"]) {
+    const groupedId = { toString: () => decimal };
+    const messages = [7, 8].map((id) =>
+      mapMessage({ ...input, id, groupedId, media: { type: "photo" } }),
+    );
+    expect(messages.map((message) => message.id)).toEqual(["7", "8"]);
+    for (const message of messages) {
+      expect(schema("Message")(message)).toBe(true);
+      expect(message.groupId).toBe(decimal);
+      expect(message.senderId).toBe("123");
+    }
+  }
+  for (const extra of [{}, { groupedId: null }]) {
+    const message = mapMessage({ ...input, ...extra });
+    expect(schema("Message")(message)).toBe(true);
+    expect("groupId" in message).toBe(false);
+  }
+});
+
 test("sender avatars name the user or chat and change with the profile photo", () => {
   for (const sender of [user, chat]) {
     for (const photoId of ["1234567890123456789", "-1234567890123456789"]) {

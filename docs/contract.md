@@ -177,6 +177,8 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 `{id, kind, name?, mimeType?, size?, width?, height?, durationSeconds?}` 입니다.
 
 - `kind`: `file`(받을 것), `image`, `video`, `audio`, `voice`, `sticker`, `animation`.
+- 앨범처럼 메신저가 한 덩어리로 보여 주는 메시지들은 같은 `groupId` 를 가집니다(0.2.4). 한 사람이 연달아 보낸 것이라
+  클라이언트는 그 사진들을 한 그리드로 그릴 수 있고, 답장·반응·수정·삭제는 여전히 메시지마다 합니다.
 - `avatars.read` 를 함께 신고하면 메시지의 `senderAvatar` 도 같은 `/media` 의 id 입니다(0.2.3).
   보낸 사람이 사진을 바꾸면 id 도 바뀝니다. 없으면 클라이언트가 자기 자리표시를 그립니다.
 - `id` 는 불투명하고 `GET /media?id=` 가 그 바이트를 답합니다. 같은 id 는 답하는 동안 늘 같은

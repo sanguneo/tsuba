@@ -48,6 +48,8 @@ export interface Message {
   editedAt?: string;
   fromMe: boolean;
   replyTo?: string;
+  /** Shared by the messages of one album; each stays its own message. */
+  groupId?: string;
   attachments?: Attachment[];
   reactions?: Reaction[];
 }

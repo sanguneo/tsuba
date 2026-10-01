@@ -48,6 +48,7 @@ export interface MessageLike {
   text: string;
   date: Date;
   isOutgoing: boolean;
+  groupedId?: { toString(): string } | null;
   isService?: boolean;
   action?: unknown;
   media?: MediaLike | null;
@@ -230,6 +231,9 @@ export function mapMessage(message: MessageLike): Message {
           : "text",
     sentAt: message.date.toISOString(),
     fromMe: message.isOutgoing,
+    ...(message.groupedId == null
+      ? {}
+      : { groupId: message.groupedId.toString() }),
     ...(message.editDate ? { editedAt: message.editDate.toISOString() } : {}),
     ...(replyTo == null ? {} : { replyTo: String(replyTo) }),
     ...(attachment ? { attachments: [attachment] } : {}),

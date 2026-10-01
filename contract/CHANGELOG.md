@@ -6,6 +6,18 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.4 — 2026-10-01
+
+Additive: a 0.2.3 client ignores the new key, and a 0.2.4 client draws a 0.2.3
+adapter's messages one by one, as before.
+
+### Added
+
+- **`Message.groupId`**: messages the messenger shows as one album (a Telegram
+  media group) share it, so a client can draw their pictures as one grid. Each
+  stays its own message for replies, reactions, edits and deletion. No feature
+  gates it: it is a fact about the messages, like `replyTo`.
+
 ## 0.2.3 — 2026-10-01
 
 Additive: a 0.2.2 client works with a 0.2.3 adapter (it ignores the new key and
