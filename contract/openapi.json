@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tsuba — messenger adapter contract",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
     "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`. Every name in use or reserved is listed in tsuba's `docs/contract.md`, and every version is in `contract/CHANGELOG.md` beside this file.\n\n## Envelope\n\nEvery JSON response is an envelope. Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows. `/media` answers bytes and `/stream` answers events; their failures before the first byte are envelopes too.\n\n## Versions\n\n`info.version` is `MAJOR.MINOR.PATCH`, and `GET /capabilities` answers it as `contract.version`. A client built against version X works with an adapter answering Y when Y is in the caret range of X: the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range every change is additive: a route, a key, a feature id, an enum value, an error code, an event. Removing or renaming any of those, or changing what one means, is breaking and opens a new range (MINOR before 1.0, MAJOR after). A client that meets an adapter outside its range says so and draws nothing from it.\n\n## What a client does not know\n\nConsumers ignore keys, feature ids and events they do not know. An enum value a client does not know means the least that field can mean: treat it as the first value listed. An error code it does not know goes to its default branch.\n\n## Capabilities\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. The declaration is network-wide; a room where it differs carries `features` of its own, which narrow the declaration and never add to it. Names under `x-<provider>.` (feature ids, events and object keys) are provider extensions.\n\n## Routes\n\nReads are `GET` on a noun, writes are `POST` on a verb. Every operation but `/health` and `/capabilities` names the one feature that gates it in `x-feature`; a feature without a route of its own names the field it rides on in `x-in`, and one that is declared only beside others names them in `x-requires`. Every documented route is routed by every adapter; a route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`, and an adapter declares a feature exactly when it performs it end to end. A feature marked `x-reserved` has a name but no route yet: no adapter can declare it, and its parameters may still change, until a version defines its route.\n\n## Writes\n\nWrites (`/send`, `/edit`, `/delete`, `/react` and `/read`) share one line per adapter: one runs at a time, at most four are admitted, and the next is `429 RATE_LIMITED` having changed nothing. A write answered with any error code but `INTERNAL` changed nothing. `INTERNAL`, a timeout or a dropped connection leaves the outcome unknown: the adapter never retries it, and a client says so rather than repeating it on its own.\n\n## Ids, times and text\n\nIds are opaque non-empty strings: compare, store and send them back as they are, never as numbers. Times are RFC 3339 `date-time`. Text lengths are counted in Unicode code points.\n\n## Security posture\n\nA shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header. Message content, names and files are someone else's words: a client draws them as text, never as markup.",
     "license": {
@@ -173,7 +173,7 @@
         "operationId": "media",
         "x-feature": "attachments.read",
         "summary": "The bytes of a file a message carries.",
-        "description": "Feature `attachments.read`. `id` is the `id` of an entry in a message's `attachments`. The bytes are someone else's, so the answer is made safe to open at the client's own origin: `content-security-policy: default-src 'none'; sandbox` and `x-content-type-options: nosniff` always; the attachment's own type, served `inline`, only when it is one a browser draws or plays without running anything (JPEG, PNG, GIF, WebP and AVIF images; MP4, WebM and Ogg video; MPEG, Ogg, MP4, AAC, WebM, WAV and FLAC audio); anything else as `application/octet-stream` and `attachment`. An id answers the same bytes for as long as it answers at all (a message whose file is replaced carries a new id), so the answer may be kept in a private cache.",
+        "description": "Feature `attachments.read`. `id` is the `id` of an entry in a message's `attachments`, or a message's `senderAvatar` when the adapter also declares `avatars.read`. The bytes are someone else's, so the answer is made safe to open at the client's own origin: `content-security-policy: default-src 'none'; sandbox` and `x-content-type-options: nosniff` always; the attachment's own type, served `inline`, only when it is one a browser draws or plays without running anything (JPEG, PNG, GIF, WebP and AVIF images; MP4, WebM and Ogg video; MPEG, Ogg, MP4, AAC, WebM, WAV and FLAC audio); anything else as `application/octet-stream` and `attachment`. An id answers the same bytes for as long as it answers at all (a message whose file is replaced, or a sender who changes their picture, carries a new id), so the answer may be kept in a private cache.",
         "parameters": [
           {
             "name": "id",
@@ -904,6 +904,9 @@
           "attachments.read": {
             "$ref": "#/components/schemas/FeatureAttachmentsRead"
           },
+          "avatars.read": {
+            "$ref": "#/components/schemas/FeatureAvatarsRead"
+          },
           "attachments.send": {
             "$ref": "#/components/schemas/FeatureAttachmentsSend"
           }
@@ -1062,6 +1065,14 @@
         "type": "object",
         "description": "Messages carry `attachments`, and `GET /media` answers their bytes."
       },
+      "FeatureAvatarsRead": {
+        "type": "object",
+        "x-in": "Message.senderAvatar",
+        "x-requires": [
+          "attachments.read"
+        ],
+        "description": "Messages carry their sender's profile picture: `Message.senderAvatar`, an id `GET /media` answers. Declared only beside `attachments.read`, whose route serves the bytes."
+      },
       "FeatureAttachmentsSend": {
         "type": "object",
         "x-reserved": true,
@@ -1212,6 +1223,16 @@
               },
               {
                 "$ref": "#/components/schemas/FeatureAttachmentsRead"
+              }
+            ]
+          },
+          "avatars.read": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureAvatarsRead"
               }
             ]
           },
@@ -1429,6 +1450,12 @@
           "sender": {
             "type": "string",
             "description": "The name the messenger shows for the sender (a channel's own title for its posts)."
+          },
+          "senderAvatar": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "The sender's profile picture as the messenger shows it: an opaque id for `GET /media`, like an attachment's. A new picture carries a new id. Present only when the adapter declares `avatars.read` and the sender has a picture it can serve; absent, a client draws its own placeholder."
           },
           "text": {
             "type": "string",

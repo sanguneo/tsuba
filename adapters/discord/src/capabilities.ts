@@ -24,5 +24,7 @@ export const CAPABILITIES: Capabilities = {
     "reactions.read": {},
     "reactions.send": { maxPerMessage: 20 },
     "attachments.read": {},
+    // Custom guild/user avatar hashes identify pictures served through /media.
+    "avatars.read": {},
   },
 };

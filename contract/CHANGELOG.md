@@ -6,6 +6,20 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.3 — 2026-10-01
+
+Additive: a 0.2.2 client works with a 0.2.3 adapter (it ignores the new key and
+feature), and a 0.2.3 client with a 0.2.2 adapter (which cannot declare it, so
+the client draws its own placeholder for every sender).
+
+### Added
+
+- **`avatars.read`** and **`Message.senderAvatar`**: the sender's profile
+  picture as an opaque id that `GET /media` answers, like an attachment's. The
+  bytes go through the same inert `/media` headers, so a client never fetches a
+  messenger's own address. Declared only beside `attachments.read`, whose route
+  serves them. A new picture carries a new id, so the private cache stays right.
+
 ## 0.2.2 — 2026-10-01
 
 Additive: a 0.2.1 client works with a 0.2.2 adapter (it ignores the new routes,

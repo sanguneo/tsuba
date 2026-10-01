@@ -51,6 +51,8 @@ const INVALID = [
 const REMEMBERED_ROOMS = 20_000;
 const CHANNEL_IDS_BELOW = -1_000_000_000_000;
 const MEDIA_ID = /^(-?\d+):(\d+):([A-Za-z0-9_-]+)$/;
+// Canonical marked peer id and signed 64-bit Telegram photo id; no attachment overlap.
+const AVATAR_ID = /^avatar:(-?[1-9]\d*):(0|-?[1-9]\d*)$/;
 
 function peerId(value: string): number {
   const id = Number(value);
@@ -294,6 +296,23 @@ export function telegramBackend(tg: TelegramClient): AdapterBackend {
       ),
     media: (id, signal) =>
       translated(async () => {
+        if (id.startsWith("avatar:")) {
+          const missing = new AdapterError("NOT_FOUND", "No such avatar");
+          const match = AVATAR_ID.exec(id);
+          if (!match || match[0] !== id) throw missing;
+          const [, peerText = "", photoText = ""] = match;
+          const photoId = BigInt(photoText);
+          if (photoId < -(1n << 63n) || photoId >= 1n << 63n) throw missing;
+          // Re-resolve for a fresh location; an old id must never serve a new picture.
+          const peer = await tg.getPeer(peerId(peerText));
+          const photo = peer.photo;
+          if (!photo || photo.raw.photoId.toString() !== photoText)
+            throw missing;
+          return {
+            body: tg.downloadAsStream(photo.small, { abortSignal: signal }),
+            mimeType: "image/jpeg",
+          };
+        }
         const missing = new AdapterError("NOT_FOUND", "No such attachment");
         const [, roomId = "", messageIdText = "", unique] =
           MEDIA_ID.exec(id) ?? [];

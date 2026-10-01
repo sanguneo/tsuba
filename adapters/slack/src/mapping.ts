@@ -244,6 +244,7 @@ export function mapSlackMessage(
   context: {
     selfId: string;
     sender: string;
+    senderAvatar?: string;
     text: string;
     emoji: EmojiTable;
   },
@@ -264,6 +265,7 @@ export function mapSlackMessage(
     roomId,
     ...(senderId ? { senderId } : {}),
     sender: context.sender,
+    ...(context.senderAvatar ? { senderAvatar: context.senderAvatar } : {}),
     text: context.text,
     kind: !CONVERSATION_SUBTYPES.has(message.subtype)
       ? "service"

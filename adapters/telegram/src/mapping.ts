@@ -10,6 +10,7 @@ export interface PeerLike {
   id: number;
   type: "user" | "chat";
   displayName: string;
+  photo?: { raw: { photoId: { toString(): string } } } | null;
   chatType?: string;
   isDeleted?: boolean;
   isCreator?: boolean;
@@ -214,6 +215,11 @@ export function mapMessage(message: MessageLike): Message {
     roomId,
     senderId: String(message.sender.id),
     sender: message.sender.displayName,
+    ...(message.sender.photo
+      ? {
+          senderAvatar: `avatar:${message.sender.id}:${message.sender.photo.raw.photoId.toString()}`,
+        }
+      : {}),
     text: message.text,
     kind:
       message.isService || message.action || message.raw?.action

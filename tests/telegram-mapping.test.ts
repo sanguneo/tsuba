@@ -123,6 +123,23 @@ test("message mapping has string ids, names, ISO dates and no null optionals", (
   expect(edited.fromMe).toBe(true);
 });
 
+test("sender avatars name the user or chat and change with the profile photo", () => {
+  for (const sender of [user, chat]) {
+    for (const photoId of ["1234567890123456789", "-1234567890123456789"]) {
+      const message = mapMessage({
+        ...input,
+        sender: { ...sender, photo: { raw: { photoId } } },
+      });
+      expect(schema("Message")(message)).toBe(true);
+      expect(message.senderAvatar).toBe(`avatar:${sender.id}:${photoId}`);
+    }
+    expect(mapMessage({ ...input, sender }).senderAvatar).toBeUndefined();
+    expect(
+      mapMessage({ ...input, sender: { ...sender, photo: null } }).senderAvatar,
+    ).toBeUndefined();
+  }
+});
+
 test("service wins over media, including unsupported raw actions and media", () => {
   for (const [extra, kind] of [
     [{ isService: true, media: { type: "photo" } }, "service"],

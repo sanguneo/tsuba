@@ -25,5 +25,7 @@ export const CAPABILITIES: Capabilities = {
     "reactions.send": {},
     "read.mark": {},
     "attachments.read": {},
+    // users.info supplies profile images; /media serves URL-versioned opaque ids.
+    "avatars.read": {},
   },
 };

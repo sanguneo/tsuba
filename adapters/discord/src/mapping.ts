@@ -45,6 +45,8 @@ export interface DiscordMessageLike {
   channelId: string;
   authorId: string;
   authorName: string;
+  /** Opaque custom avatar media id, supplied only by adapters that support it. */
+  avatarId?: string;
   fromMe: boolean;
   content: string;
   createdAt: Date;
@@ -180,6 +182,9 @@ export function mapDiscordMessage(message: DiscordMessageLike): Message {
     roomId: message.channelId,
     senderId: message.authorId,
     sender: message.authorName,
+    ...(message.avatarId === undefined
+      ? {}
+      : { senderAvatar: message.avatarId }),
     text: message.content,
     kind: !CONVERSATION_TYPES.has(message.type)
       ? "service"

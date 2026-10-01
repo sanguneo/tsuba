@@ -14,6 +14,8 @@ test("serve-kit accepts the Discord declaration with its backend", () => {
     backend: discordBackend(client),
   });
   expect(handler.routes).toContain("/react");
+  expect(handler.routes).toContain("/media");
+  expect(CAPABILITIES.features["avatars.read"]).toEqual({});
   expect(CAPABILITIES.account.kind).toBe("bot");
   expect(CAPABILITIES.features["read.mark"]).toBeUndefined();
 });

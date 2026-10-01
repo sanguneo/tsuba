@@ -162,6 +162,14 @@ test("message conversion preserves string ids, reply, edits, attachments and rea
   });
 });
 
+test("senderAvatar is emitted only when the adapter supplies an opaque avatar id", () => {
+  expect(mapDiscordMessage(message)).not.toHaveProperty("senderAvatar");
+  const avatarId = "avatar:100000000000000003:0123456789abcdef0123456789abcdef";
+  const mapped = mapDiscordMessage({ ...message, avatarId });
+  expect(mapped.senderAvatar).toBe(avatarId);
+  expect(schema("Message")(mapped)).toBe(true);
+});
+
 test("replies and command answers are conversation; joins, pins and the like are service, even with a file", () => {
   for (const type of [0, 19, 20, 23])
     expect(mapDiscordMessage({ ...message, type }).kind).toBe("text");

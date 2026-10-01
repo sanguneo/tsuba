@@ -20,6 +20,7 @@ export interface FeatureParams {
   "typing.send": Record<string, never>;
   "threads.read": Record<string, never>;
   "attachments.read": Record<string, never>;
+  "avatars.read": Record<string, never>;
   "attachments.send": { maxBytes: number; caption: boolean };
 }
 
@@ -39,6 +40,7 @@ const featureIds: Record<FeatureId, true> = {
   "typing.send": true,
   "threads.read": true,
   "attachments.read": true,
+  "avatars.read": true,
   "attachments.send": true,
 };
 

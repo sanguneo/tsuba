@@ -40,6 +40,8 @@ export interface Message {
   roomId: string;
   senderId?: string;
   sender: string;
+  /** A `/media` id for the sender's picture; only with `avatars.read`. */
+  senderAvatar?: string;
   text: string;
   kind: "text" | "media" | "service";
   sentAt: string;

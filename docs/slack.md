@@ -63,6 +63,14 @@ Web API 는 HTTPS 폼 요청이고 Socket Mode 는 WebSocket 하나라서 Bun �
 | `reactions.send` | `{}` | 내 반응과 원하는 목록의 차이만큼 `reactions.remove`·`add` |
 | `read.mark` | `{}` | `conversations.mark`. Slack 의 내 읽음 위치가 바뀜 |
 | `attachments.read` | `{}` | 메시지를 다시 읽어 `url_private_download` 를 받고, `files.slack.com` 에만 토큰을 실어 받음 |
+| `avatars.read` | `{}` | `users.info` 의 `profile.image_72` 를 URL 해시가 붙은 `senderAvatar` id 로 제공. `/media` 에서 사용자를 다시 확인하고 HTTPS 허용 호스트에만 토큰 없이 요청하며 리다이렉트는 거절 |
+
+프로필 사진 호스트는 `avatars.slack-edge.com`, `secure.gravatar.com`, `a.slack-edge.com` 만 허용합니다.
+근거: Slack [user object](https://docs.slack.dev/reference/objects/user-object/),
+[`users.list` 예시](https://docs.slack.dev/reference/methods/users.list/), 공식 Python SDK 의
+[`rtm.start.json` 프로필 예시](https://github.com/slackapi/python-slack-sdk/blob/main/tests/slack_sdk_fixture/rtm.start.json).
+사용자 정보는 10분 캐시하지만 사진 요청은 새로 확인합니다. URL 이 바뀐 옛 id 는 `404 NOT_FOUND` 입니다.
+사진이 없거나 허용 URL 이 아니면 필드를 생략하며, 봇 아이콘은 현재 메시지 입력에 없어 추가 조회하지 않습니다.
 
 ## 이벤트
 

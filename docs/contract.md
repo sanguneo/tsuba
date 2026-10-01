@@ -95,6 +95,7 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 | `messages.stream` | 정의 | `GET /stream` | `resume` (`none`·`cursor`), `events?` (0.2.2) |
 | `messages.send` | 정의 | `POST /send` | `maxLength`(코드 포인트), `receipt` (`accepted`·`stored`) |
 | `attachments.read` | 정의 (0.2.1) | `Message.attachments`, `GET /media` | — |
+| `avatars.read` | 정의 (0.2.3) | `Message.senderAvatar` (`GET /media` 의 id). `attachments.read` 옆에서만 | — |
 | `messages.reply` | 정의 (0.2.2) | `POST /send` 의 `replyTo`. `messages.send` 옆에서만 | — |
 | `messages.edit` | 정의 (0.2.2) | `POST /edit` | `maxLength`, `maxAgeSeconds?` |
 | `messages.delete` | 정의 (0.2.2) | `POST /delete` | `forEveryone` |
@@ -176,6 +177,8 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 `{id, kind, name?, mimeType?, size?, width?, height?, durationSeconds?}` 입니다.
 
 - `kind`: `file`(받을 것), `image`, `video`, `audio`, `voice`, `sticker`, `animation`.
+- `avatars.read` 를 함께 신고하면 메시지의 `senderAvatar` 도 같은 `/media` 의 id 입니다(0.2.3).
+  보낸 사람이 사진을 바꾸면 id 도 바뀝니다. 없으면 클라이언트가 자기 자리표시를 그립니다.
 - `id` 는 불투명하고 `GET /media?id=` 가 그 바이트를 답합니다. 같은 id 는 답하는 동안 늘 같은
   바이트를 답합니다. 메시지의 파일이 바뀌면 id 도 바뀝니다. 그래서 응답은
   `cache-control: private, max-age=86400` 입니다.

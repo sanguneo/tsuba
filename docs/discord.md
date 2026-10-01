@@ -57,6 +57,7 @@ Discord 의 서버(길드)에는 채널이 여럿 있습니다. 그중 **일반 
 | `reactions.read` | `{}` | 유니코드 이모지 반응만(서버 커스텀 이모지는 뺌) |
 | `reactions.send` | `maxPerMessage: 20` | 지금 내 반응과 원하는 목록의 차이만큼 빼고 더함. 메시지 전체 반응 종류가 20개를 넘을 요청은 변경 전에 거절. 여러 REST 변경 중 예상 밖 오류가 나면 일부가 적용됐을 수 있으므로 `INTERNAL` (결과 불명) |
 | `attachments.read` | `{}` | 메시지를 다시 읽어 서명된 CDN 주소를 새로 받고, `cdn.discordapp.com`·`media.discordapp.net` 에서만 받아 흘려 보냄 |
+| `avatars.read` | `{}` | 서버별 프로필 사진 우선, 없으면 사용자 프로필 사진. 기본 사진은 생략. `senderAvatar` 는 해시를 포함한 불투명 id이며 `/media` 가 Discord CDN 의 64px PNG 를 반환하므로 사진이 바뀌면 id 도 바뀜 |
 
 보내는 글은 `@everyone`·`@here`·역할을 부르지 않습니다(`allowedMentions: users`). 쓰기는 serve-kit
 의 줄 하나를 함께 씁니다. 권한은 방 목록에서 확인하고, `messages.send` 또는

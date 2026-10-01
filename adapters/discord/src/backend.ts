@@ -135,7 +135,13 @@ function mapChannel(channel: TextChannel, bot: User): Room | null {
 }
 
 function toMessage(message: DiscordMessage, bot: User): Message {
+  const avatarId = message.member?.avatar
+    ? `avatar:${message.guildId}:${message.author.id}:${message.member.avatar}`
+    : message.author.avatar
+      ? `avatar:${message.author.id}:${message.author.avatar}`
+      : undefined;
   const input: DiscordMessageLike = {
+    ...(avatarId === undefined ? {} : { avatarId }),
     id: message.id,
     channelId: message.channelId,
     authorId: message.author.id,
@@ -199,7 +205,10 @@ function snowflake(value: string, what: string): Snowflake {
  * chats and direct messages are not rooms. Discord keeps no read state for
  * bots, so unread counts are 0 and read marks are not offered.
  */
-export function discordBackend(client: Client<true>): AdapterBackend {
+export function discordBackend(
+  client: Client<true>,
+  fetchMedia: typeof fetch = fetch,
+): AdapterBackend {
   const bot = client.user;
 
   async function room(roomId: string): Promise<TextChannel> {
@@ -478,6 +487,34 @@ export function discordBackend(client: Client<true>): AdapterBackend {
     },
 
     async media(id, signal) {
+      if (id.startsWith("avatar:")) {
+        const avatar =
+          /^avatar:(?:(\d{17,20}):)?(\d{17,20}):((?:a_)?[0-9a-f]{32})$/.exec(
+            id,
+          );
+        if (!avatar)
+          throw new AdapterError("NOT_FOUND", "No such Discord avatar");
+        const [, guildId, userId, hash] = avatar;
+        // Construct the CDN path ourselves: an opaque id is never a URL.
+        const path = guildId
+          ? `guilds/${guildId}/users/${userId}/avatars/${hash}`
+          : `avatars/${userId}/${hash}`;
+        const response = await discord(async () => {
+          const result = await fetchMedia(
+            `https://cdn.discordapp.com/${path}.png?size=64`,
+            { signal, redirect: "error" },
+          );
+          if (!result.ok) throw { status: result.status };
+          return result;
+        });
+        if (!response.body)
+          throw new AdapterError("NOT_FOUND", "The Discord avatar is gone");
+        return {
+          body: response.body,
+          mimeType: "image/png",
+          name: "avatar.png",
+        };
+      }
       const [, roomId = "", messageId = "", attachmentId = ""] =
         /^(\d{17,20}):(\d{17,20}):(\d{17,20})$/.exec(id) ?? [];
       if (!attachmentId)
@@ -492,7 +529,7 @@ export function discordBackend(client: Client<true>): AdapterBackend {
       if (url.protocol !== "https:" || !CDN_HOSTS.has(url.hostname))
         throw new AdapterError("NOT_FOUND", "No such Discord attachment");
       const response = await discord(() =>
-        fetch(url, { signal, redirect: "error" }),
+        fetchMedia(url, { signal, redirect: "error" }),
       );
       if (!response.ok || !response.body)
         throw new AdapterError("NOT_FOUND", "The Discord attachment is gone");

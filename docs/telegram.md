@@ -1,7 +1,7 @@
 # Telegram 어댑터
 
 첫 어댑터입니다. **사용자 본인 계정의 클라이언트**이고, 봇이 아닙니다
-(`account.kind: "user"`). 계약 0.2.2의 방 목록(방별 쓰기 가능 여부 포함), 메시지 읽기,
+(`account.kind: "user"`). 계약 0.2.3의 방 목록(방별 쓰기 가능 여부 포함), 메시지 읽기,
 첨부, 반응, SSE 이어 읽기와 변경 이벤트, 텍스트 전송과 답장·수정·삭제·반응·읽음 처리를
 구현했습니다. 합성 데이터와 로컬 HTTP로 검증하며, 실제 계정에서의
 새 구현 검증은 운영자가 별도로 합니다.
@@ -66,6 +66,7 @@ TSUBA_PORT=8790 bun adapters/telegram/src/cli.ts serve
 | `reactions.send` | `maxPerMessage` | `sendReaction` 에 목록을 통째로. 한도는 시작할 때 앱 설정의 `reactions_user_max_default`(프리미엄은 `_premium`)에서 읽음 |
 | `read.mark` | `{}` | `readHistory(maxId)`. 상대에게 읽음으로 보일 수 있음 |
 | `attachments.read` | `{}` | 사진·문서·동영상·GIF·오디오·음성·스티커를 `attachments` 로, `/media` 는 `downloadAsStream` 으로 흘려 보냄 |
+| `avatars.read` | `{}` | 발신자 사용자·채팅의 현재 프로필 사진을 `senderAvatar` 로. `/media` 에서 현재 사진 id를 다시 확인하고 작은 사진을 `image/jpeg` 로 스트리밍 |
 
 입력 중 표시, 스레드, 파일 보내기는 신고하지 않습니다(계약에서도 아직 예약). 쓰기는 모두
 줄 하나를 함께 쓰며, 한 번에 하나씩 실행 중 요청을 포함해 최대 4개만 받아들이고 5번째는
@@ -88,6 +89,11 @@ TSUBA_PORT=8790 bun adapters/telegram/src/cli.ts serve
 `403 FORBIDDEN` 으로 답합니다.
 
 ## 첨부
+
+- 아바타 id는 `avatar:<peerId>:<photoId>` 입니다(클라이언트에는 불투명).
+  사진이 바뀌면 id도 바뀌며, `/media` 는 peer를 다시 조회해 현재 사진 id가 다르거나
+  사진이 없으면 `404` 로 답합니다. 사진이 없는 발신자는 `senderAvatar` 를 생략합니다.
+  캐시와 응답 헤더는 첨부와 마찬가지로 serve-kit의 private 캐시 정책을 따릅니다.
 
 - 첨부 id는 `<roomId>:<messageId>:<uniqueFileId>` 입니다(클라이언트에는 불투명).
   `/media` 는 그때 메시지를 다시 읽어 파일 참조를 새로 받고, 메시지의 파일이 그 id와

@@ -299,9 +299,9 @@ test("a reply goes under its message's thread, is broadcast, and is escaped; the
         thread_ts: params.thread_ts,
       },
     }),
-    "users.info": () => ({
+    "users.info": (params) => ({
       ok: true,
-      user: { id: SELF, profile: { display_name: "Me" } },
+      user: { id: params.user, profile: { display_name: "Me" } },
     }),
   });
   const backend = slackBackend(call, { userId: SELF }, emoji, quiet);

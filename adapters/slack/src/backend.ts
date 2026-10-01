@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type AdapterBackend,
   AdapterError,
@@ -6,7 +7,7 @@ import {
   type Room,
   type StreamUpdate,
 } from "@tsuba/serve-kit";
-import { REACTION_NOOPS, type SlackCall } from "./api";
+import { REACTION_NOOPS, type SlackCall, slackError } from "./api";
 import type { EmojiTable } from "./emoji";
 import {
   fromSlackText,
@@ -27,6 +28,32 @@ import {
 const CONVERSATION = /^[CDG][A-Z0-9]{6,}$/;
 const TS = /^\d+\.\d{1,6}$/;
 const FILE_HOSTS = new Set(["files.slack.com"]);
+// Slack user-object docs, users.list examples, and slackapi/python-slack-sdk's
+// tests/slack_sdk_fixture/rtm.start.json show these profile image hosts.
+const AVATAR_HOSTS = new Set([
+  "avatars.slack-edge.com",
+  "secure.gravatar.com",
+  "a.slack-edge.com",
+]);
+const AVATAR_ID = /^avatar:([UW][A-Z0-9]{6,128}):([a-f0-9]{24})$/;
+// users.info is Tier 4; reuse display profiles across pages for ten minutes.
+const USER_CACHE_MS = 10 * 60_000;
+
+function avatarUrl(address: unknown): URL | undefined {
+  if (typeof address !== "string" || !URL.canParse(address)) return undefined;
+  const url = new URL(address);
+  return url.protocol === "https:" &&
+    AVATAR_HOSTS.has(url.hostname) &&
+    !url.username &&
+    !url.password &&
+    !url.port
+    ? url
+    : undefined;
+}
+
+function avatarHash(address: string): string {
+  return createHash("sha256").update(address).digest("hex").slice(0, 24);
+}
 const ROOM_LIMIT = 500;
 /**
  * `conversations.info` and `conversations.history` are Tier 3 (50+ a minute
@@ -43,7 +70,7 @@ interface SlackUser {
   id: string;
   name?: string;
   deleted?: boolean;
-  profile?: { display_name?: string; real_name?: string };
+  profile?: { display_name?: string; real_name?: string; image_72?: string };
   real_name?: string;
 }
 
@@ -96,7 +123,10 @@ export function slackBackend(
   userToken = "",
   options: { fillIntervalMs?: number; rateLimitPauseMs?: number } = {},
 ): AdapterBackend & { stop(): void } {
-  const users = new Map<string, Promise<SlackUser | undefined>>();
+  const users = new Map<
+    string,
+    { expires: number; value: Promise<SlackUser> }
+  >();
   const info = new Map<string, SlackConversationInfo>();
   const stale = new Set<string>();
   const failed = new Set<string>();
@@ -104,16 +134,32 @@ export function slackBackend(
   let worker: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
 
-  function user(id: string): Promise<SlackUser | undefined> {
-    let held = users.get(id);
-    if (!held) {
-      held = call<{ user?: SlackUser }>("users.info", { user: id }).then(
-        (answer) => answer.user,
-        () => undefined,
-      );
-      users.set(id, held);
+  function user(id: string, refresh = false): Promise<SlackUser> {
+    const held = users.get(id);
+    if (!refresh && held && held.expires > Date.now()) return held.value;
+    const value = call<{ user?: SlackUser }>("users.info", { user: id }).then(
+      (answer) => {
+        if (!answer.user || answer.user.id !== id)
+          throw new AdapterError("INTERNAL", "Slack answered an invalid user");
+        return answer.user;
+      },
+    );
+    users.set(id, { expires: Date.now() + USER_CACHE_MS, value });
+    return value.catch((error: unknown) => {
+      if (users.get(id)?.value === value) users.delete(id);
+      throw error;
+    });
+  }
+
+  async function displayUser(id: string): Promise<SlackUser | undefined> {
+    try {
+      return await user(id);
+    } catch (error) {
+      // A name or picture we cannot read must not hide the message or room.
+      // Only mapped Slack failures are optional; programming errors still escape.
+      if (error instanceof AdapterError) return undefined;
+      throw error;
     }
-    return held;
   }
 
   function nameOf(found: SlackUser | undefined, fallback: string): string {
@@ -128,7 +174,7 @@ export function slackBackend(
 
   async function names(ids: string[]): Promise<Map<string, string>> {
     const unique = [...new Set(ids)];
-    const found = await Promise.all(unique.map((id) => user(id)));
+    const found = await Promise.all(unique.map((id) => displayUser(id)));
     return new Map(unique.map((id, index) => [id, nameOf(found[index], id)]));
   }
 
@@ -141,8 +187,18 @@ export function slackBackend(
       ...mentionedUsers(text),
       ...(message.user ? [message.user] : []),
     ]);
+    // Bot icons are not carried by this adapter's message shape; no extra calls.
+    const address =
+      message.user && !message.bot_id
+        ? (await displayUser(message.user))?.profile?.image_72
+        : undefined;
+    const senderAvatar =
+      typeof address === "string" && avatarUrl(address) && message.user
+        ? `avatar:${message.user}:${avatarHash(address)}`
+        : undefined;
     return mapSlackMessage(roomId, message, {
       selfId: identity.userId,
+      ...(senderAvatar ? { senderAvatar } : {}),
       sender: message.user
         ? (known.get(message.user) ?? message.user)
         : (message.username ?? "bot"),
@@ -252,7 +308,7 @@ export function slackBackend(
     conversation: Conversation,
   ): Promise<{ title: string; canSend: boolean }> {
     if (conversation.is_im && conversation.user) {
-      const other = await user(conversation.user);
+      const other = await displayUser(conversation.user);
       return {
         title: nameOf(other, conversation.user),
         canSend: !other?.deleted,
@@ -510,6 +566,39 @@ export function slackBackend(
     },
 
     async media(id, signal) {
+      if (id.startsWith("avatar:")) {
+        const match = AVATAR_ID.exec(id);
+        if (!match || match[0] !== id)
+          throw new AdapterError("NOT_FOUND", "No such Slack avatar");
+        const userId = match[1] as string;
+        // Re-read so a stale opaque id never serves a replacement picture.
+        const address = (await user(userId, true)).profile?.image_72;
+        const url = avatarUrl(address);
+        if (
+          !url ||
+          typeof address !== "string" ||
+          avatarHash(address) !== match[2]
+        )
+          throw new AdapterError("NOT_FOUND", "No such Slack avatar");
+        let response: Response;
+        try {
+          response = await fetcher(url, { signal, redirect: "error" });
+        } catch {
+          throw slackError("avatar_fetch_failed");
+        }
+        if (response.status === 429) throw slackError("ratelimited");
+        if (response.status === 401) throw slackError("invalid_auth");
+        if (response.status === 403) throw slackError("access_denied");
+        if (response.status === 404 || response.status === 410)
+          throw slackError("file_not_found");
+        const mimeType = response.headers
+          .get("content-type")
+          ?.split(";", 1)[0]
+          ?.trim();
+        if (!response.ok || !response.body || !mimeType?.startsWith("image/"))
+          throw slackError("invalid_avatar_response");
+        return { body: response.body, mimeType };
+      }
       const [, roomId = "", ts = "", fileId = ""] =
         /^([CDG][A-Z0-9]{6,}):(\d+\.\d{1,6}):(F[A-Z0-9]+)$/.exec(id) ?? [];
       if (!fileId) throw new AdapterError("NOT_FOUND", "No such Slack file");
