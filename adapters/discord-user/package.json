@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "serve": "bun src/cli.ts serve"
+  },
   "dependencies": {
     "@tsuba/serve-kit": "workspace:*"
   }

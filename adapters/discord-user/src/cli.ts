@@ -2,22 +2,32 @@ import { serve } from "@tsuba/serve-kit";
 import { discordUserBackend } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
+/**
+ * Personal Discord account adapter. Output is counts only: no server, channel
+ * or person names, message contents, or tokens are printed.
+ *
+ *   bun adapters/discord-user/src/cli.ts check
+ *   bun adapters/discord-user/src/cli.ts serve
+ *
+ * check uses REST only; the Gateway starts when serve subscribes.
+ */
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not set; see docs/discord-user.md`);
   return value;
 }
 
-const userToken = required("TSUBA_DISCORD_USER_TOKEN");
-const backend = discordUserBackend(userToken);
-
 const [command] = process.argv.slice(2);
 
-if (command === "check") {
-  const res = await backend.listRooms();
-  console.log("rooms:", res.rooms.length);
-  backend.stop();
-} else if (command === "serve") {
+if (command !== "check" && command !== "serve") {
+  console.log("commands: check | serve");
+} else if (command === "check") {
+  const backend = discordUserBackend(required("TSUBA_DISCORD_USER_TOKEN"));
+  const res = await backend.listRooms?.();
+  console.log("rooms:", res?.rooms.length ?? 0);
+} else {
+  const backend = discordUserBackend(required("TSUBA_DISCORD_USER_TOKEN"));
   const server = serve({
     token: process.env.TSUBA_DISCORD_USER_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_DISCORD_USER_PORT ?? 8794),
@@ -32,9 +42,5 @@ if (command === "check") {
     process.once("SIGINT", resolve);
     process.once("SIGTERM", resolve);
   });
-  backend.stop();
   await server.stop(true);
-} else {
-  console.log("commands: check | serve");
-  backend.stop();
 }

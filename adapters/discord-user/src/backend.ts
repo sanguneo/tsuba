@@ -1,20 +1,22 @@
 import {
+  type AdapterBackend,
   AdapterError,
-  type MediaFile,
-  type Message,
-  type Reaction,
   type Room,
   type StreamUpdate,
 } from "@tsuba/serve-kit";
 import {
-  mapUserChannel,
-  mapUserMessage,
-  type RawDiscordChannel,
-  type RawDiscordMessage,
-} from "./mapping";
+  type DiscordMessageLike,
+  mapDiscordMessage,
+  reactionPlan,
+} from "../../discord/src/mapping";
+import { mapUserChannel, type UserChannelLike } from "./mapping";
 
 const DISCORD_API = "https://discord.com/api/v9";
 const DISCORD_GATEWAY = "wss://gateway.discord.gg/?v=9&encoding=json";
+const SNOWFLAKE = /^[0-9]{17,20}$/;
+const CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+const ROOM_LIMIT = 500;
+const GUILD_CONCURRENCY = 4;
 
 const FINGERPRINT = {
   os: "Windows",
@@ -34,15 +36,13 @@ const FINGERPRINT = {
   client_event_source: null,
 };
 
-function getSuperProperties(): string {
-  return Buffer.from(JSON.stringify(FINGERPRINT)).toString("base64");
-}
-
 export function getDiscordHeaders(userToken: string): Record<string, string> {
   return {
     Authorization: userToken,
     "User-Agent": FINGERPRINT.browser_user_agent,
-    "X-Super-Properties": getSuperProperties(),
+    "X-Super-Properties": Buffer.from(JSON.stringify(FINGERPRINT)).toString(
+      "base64",
+    ),
     Accept: "*/*",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     Origin: "https://discord.com",
@@ -53,379 +53,617 @@ export function getDiscordHeaders(userToken: string): Record<string, string> {
   };
 }
 
+function apiError(error: unknown): AdapterError {
+  if (error instanceof AdapterError) return error;
+  const status =
+    error && typeof error === "object" && "status" in error
+      ? error.status
+      : undefined;
+  switch (status) {
+    case 400:
+      return new AdapterError(
+        "INVALID_REQUEST",
+        "Discord refused the request; check the message and its ids",
+      );
+    case 401:
+      return new AdapterError(
+        "REAUTH_REQUIRED",
+        "Discord no longer accepts this user token; replace it where the adapter runs",
+      );
+    case 403:
+      return new AdapterError(
+        "FORBIDDEN",
+        "Discord does not let this account do that here; check channel permissions",
+      );
+    case 404:
+      return new AdapterError(
+        "NOT_FOUND",
+        "No such Discord channel, message or attachment",
+      );
+    case 429:
+      return new AdapterError(
+        "RATE_LIMITED",
+        "Discord asked the adapter to slow down; try again later",
+      );
+    default:
+      return new AdapterError(
+        "INTERNAL",
+        "The Discord adapter failed; a write's outcome is unknown",
+      );
+  }
+}
+async function discord<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    throw apiError(error);
+  }
+}
+function malformed(): never {
+  throw new AdapterError("INTERNAL", "Discord returned a malformed response");
+}
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return malformed();
+  return value as Record<string, unknown>;
+}
+function string(value: unknown): string {
+  return typeof value === "string" ? value : malformed();
+}
+function number(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : malformed();
+}
+function boolean(value: unknown): boolean {
+  return typeof value === "boolean" ? value : malformed();
+}
+function array(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : malformed();
+}
+function id(value: unknown): string {
+  const result = string(value);
+  return SNOWFLAKE.test(result) ? result : malformed();
+}
+function nullableString(value: unknown): string | null {
+  return value == null ? null : string(value);
+}
+function date(value: unknown): Date {
+  const result = new Date(string(value));
+  return Number.isNaN(result.getTime()) ? malformed() : result;
+}
+function pathRoom(value: string): string {
+  if (!SNOWFLAKE.test(value))
+    throw new AdapterError("NOT_FOUND", "No such Discord channel");
+  return value;
+}
+function pathMessage(value: string): string {
+  if (!SNOWFLAKE.test(value))
+    throw new AdapterError("INVALID_REQUEST", "Invalid Discord message id");
+  return value;
+}
+function parseUser(value: unknown) {
+  const user = record(value);
+  return {
+    id: id(user.id),
+    username: string(user.username),
+    globalName: nullableString(user.global_name),
+  };
+}
+function parseChannel(value: unknown, guildName?: string): UserChannelLike {
+  const channel = record(value);
+  return {
+    id: id(channel.id),
+    type: number(channel.type),
+    name: nullableString(channel.name),
+    guildName: guildName ?? null,
+    lastMessageId:
+      channel.last_message_id == null ? null : id(channel.last_message_id),
+    recipients:
+      channel.recipients == null
+        ? []
+        : array(channel.recipients).map(parseUser),
+  };
+}
+function parseMessage(value: unknown, userId: string): DiscordMessageLike {
+  const message = record(value);
+  const author = parseUser(message.author);
+  const reference =
+    message.message_reference == null
+      ? undefined
+      : record(message.message_reference);
+  const member = message.member == null ? undefined : record(message.member);
+  return {
+    id: id(message.id),
+    channelId: id(message.channel_id),
+    authorId: author.id,
+    authorName:
+      nullableString(member?.nick) ?? author.globalName ?? author.username,
+    fromMe: author.id === userId,
+    content: string(message.content),
+    createdAt: date(message.timestamp),
+    editedAt:
+      message.edited_timestamp == null ? null : date(message.edited_timestamp),
+    referenceId:
+      reference?.message_id == null ? null : id(reference.message_id),
+    type: number(message.type),
+    stickers:
+      message.sticker_items == null ? 0 : array(message.sticker_items).length,
+    attachments: array(message.attachments).map((value) => {
+      const attachment = record(value);
+      const optionalNumber = (value: unknown) =>
+        value == null ? null : number(value);
+      return {
+        id: id(attachment.id),
+        url: string(attachment.url),
+        name: string(attachment.filename),
+        size: number(attachment.size),
+        contentType: nullableString(attachment.content_type),
+        width: optionalNumber(attachment.width),
+        height: optionalNumber(attachment.height),
+        durationSeconds: optionalNumber(attachment.duration_secs),
+      };
+    }),
+    reactions:
+      message.reactions == null
+        ? []
+        : array(message.reactions).map((value) => {
+            const reaction = record(value);
+            const emoji = record(reaction.emoji);
+            return {
+              emojiId: emoji.id == null ? null : id(emoji.id),
+              emojiName: nullableString(emoji.name),
+              count: number(reaction.count),
+              me: boolean(reaction.me),
+            };
+          }),
+  };
+}
+function compareIds(left: { id: string }, right: { id: string }): number {
+  const a = BigInt(left.id),
+    b = BigInt(right.id);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * User-visible text channels, DMs and group DMs are rooms. We do not derive
+ * unread counts from snowflakes: without a synchronized Discord read-state
+ * snapshot they would be guesses, so unread is 0. Explicit read marks use
+ * Discord's acknowledgement endpoint and propagate its refusals.
+ * REST construction/checks never open a Gateway; only active subscriptions do.
+ */
 export function discordUserBackend(
   userToken: string,
   fetchFn: typeof fetch = fetch,
-) {
-  let currentUser: {
-    id: string;
-    username: string;
-    global_name?: string | null;
-  } | null = null;
-  const guildNames = new Map<string, string>();
-  const streamListeners = new Set<(update: StreamUpdate) => void>();
-  let gatewayWs: WebSocket | null = null;
-  let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-  let lastSeq: number | null = null;
-  let isClosed = false;
+): AdapterBackend {
+  let currentUser: ReturnType<typeof parseUser> | undefined;
+  let userRequest: Promise<ReturnType<typeof parseUser>> | undefined;
+  const listeners = new Set<(update: StreamUpdate) => void>();
+  let socket: WebSocket | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let reconnect: ReturnType<typeof setTimeout> | undefined;
+  let sequence: number | null = null;
 
-  async function request<T>(
+  async function request(
     path: string,
     options: RequestInit = {},
-  ): Promise<T> {
-    const headers = {
-      ...getDiscordHeaders(userToken),
-      ...(options.headers as Record<string, string>),
-    };
-    const res = await fetchFn(`${DISCORD_API}${path}`, {
-      ...options,
-      headers,
+  ): Promise<unknown> {
+    return discord(async () => {
+      const headers = new Headers(getDiscordHeaders(userToken));
+      new Headers(options.headers).forEach((value, name) => {
+        headers.set(name, value);
+      });
+      const response = await fetchFn(`${DISCORD_API}${path}`, {
+        ...options,
+        headers,
+      });
+      if (!response.ok) throw apiError({ status: response.status });
+      if (response.status === 204) return undefined;
+      return await response.json();
     });
-
-    if (res.status === 401) {
-      throw new AdapterError(
-        "REAUTH_REQUIRED",
-        "Discord user token expired or invalid",
-      );
-    }
-    if (res.status === 403) {
-      throw new AdapterError("FORBIDDEN", "Forbidden by Discord");
-    }
-    if (res.status === 404) {
-      throw new AdapterError("NOT_FOUND", "Resource not found on Discord");
-    }
-    if (res.status === 429) {
-      throw new AdapterError("RATE_LIMITED", "Discord rate limited");
-    }
-    if (!res.ok) {
-      throw new AdapterError("INTERNAL", `Discord HTTP error ${res.status}`);
-    }
-
-    if (res.status === 204) {
-      return undefined as T;
-    }
-    return (await res.json()) as T;
   }
-
-  async function getCurrentUser() {
-    if (!currentUser) {
-      currentUser = await request<{
-        id: string;
-        username: string;
-        global_name?: string | null;
-      }>("/users/@me");
-    }
-    return currentUser;
-  }
-
-  function startGateway() {
-    if (isClosed || gatewayWs) return;
-
+  async function getUser() {
+    if (currentUser) return currentUser;
+    if (!userRequest) userRequest = request("/users/@me").then(parseUser);
     try {
-      const ws = new WebSocket(DISCORD_GATEWAY);
-      gatewayWs = ws;
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data.toString());
-          const { op, d, s, t } = payload;
-          if (s != null) lastSeq = s;
-
-          if (op === 10) {
-            const interval = d.heartbeat_interval;
-            if (heartbeatInterval) clearInterval(heartbeatInterval);
-            heartbeatInterval = setInterval(() => {
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ op: 1, d: lastSeq }));
-              }
-            }, interval);
-
-            ws.send(
-              JSON.stringify({
-                op: 2,
-                d: {
-                  token: userToken,
-                  capabilities: 30717,
-                  properties: FINGERPRINT,
-                  presence: {
-                    status: "online",
-                    since: 0,
-                    activities: [],
-                    afk: false,
-                  },
-                  compress: false,
-                  client_state: {
-                    guild_versions: {},
-                    highest_last_message_id: "0",
-                    read_state_version: 0,
-                    user_guild_settings_version: -1,
-                    user_settings_version: -1,
-                  },
-                },
-              }),
-            );
-          } else if (op === 0) {
-            handleGatewayDispatch(t, d);
-          }
-        } catch {}
-      };
-
-      ws.onclose = () => {
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
-        gatewayWs = null;
-        if (!isClosed) {
-          setTimeout(startGateway, 3000);
-        }
-      };
-    } catch {
-      if (!isClosed) {
-        setTimeout(startGateway, 5000);
-      }
+      currentUser = await userRequest;
+      return currentUser;
+    } finally {
+      userRequest = undefined;
     }
   }
-
-  function handleGatewayDispatch(event: string, data: Record<string, unknown>) {
+  async function message(roomId: string, messageId: string) {
+    const user = await getUser();
+    return parseMessage(
+      await request(`/channels/${roomId}/messages/${messageId}`),
+      user.id,
+    );
+  }
+  async function page(roomId: string, params: URLSearchParams) {
+    const user = await getUser();
+    return array(await request(`/channels/${roomId}/messages?${params}`)).map(
+      (value) => parseMessage(value, user.id),
+    );
+  }
+  function emit(update: StreamUpdate) {
+    for (const listener of listeners) listener(update);
+  }
+  function stopGateway() {
+    if (heartbeat) clearInterval(heartbeat);
+    if (reconnect) clearTimeout(reconnect);
+    heartbeat = undefined;
+    reconnect = undefined;
+    const held = socket;
+    socket = undefined;
+    if (held) {
+      held.onclose = null;
+      held.onmessage = null;
+      held.close();
+    }
+  }
+  async function dispatch(event: string, value: unknown) {
+    const data = record(value);
     if (event === "READY") {
-      const readyUser = data.user as
-        | { id: string; username: string; global_name?: string | null }
-        | undefined;
-      if (readyUser) currentUser = readyUser;
-      if (Array.isArray(data.guilds)) {
-        for (const g of data.guilds) {
-          if (g && typeof g === "object" && "id" in g && "name" in g) {
-            guildNames.set(String(g.id), String(g.name));
-          }
-        }
-      }
-    } else if (event === "MESSAGE_CREATE") {
-      if (currentUser) {
-        const msg = mapUserMessage(
-          data as unknown as RawDiscordMessage,
-          currentUser.id,
-        );
-        for (const listener of streamListeners) {
-          listener({ event: "message", message: msg });
-        }
-      }
-    } else if (event === "MESSAGE_UPDATE") {
-      if (currentUser && data.id && data.channel_id && data.author) {
-        const msg = mapUserMessage(
-          data as unknown as RawDiscordMessage,
-          currentUser.id,
-        );
-        for (const listener of streamListeners) {
-          listener({ event: "message.edited", message: msg });
-        }
-      }
+      currentUser = parseUser(data.user);
+      return;
+    }
+    if (event === "MESSAGE_CREATE" || event === "MESSAGE_UPDATE") {
+      const user = await getUser();
+      // Gateway updates may be partial: fetch the full current message instead.
+      const normalized =
+        event === "MESSAGE_UPDATE"
+          ? await message(id(data.channel_id), id(data.id))
+          : parseMessage(data, user.id);
+      emit({
+        event: event === "MESSAGE_CREATE" ? "message" : "message.edited",
+        message: mapDiscordMessage(normalized),
+      });
     } else if (event === "MESSAGE_DELETE") {
-      if (data.id && data.channel_id) {
-        for (const listener of streamListeners) {
-          listener({
-            event: "message.deleted",
-            roomId: String(data.channel_id),
-            messageIds: [String(data.id)],
-          });
-        }
-      }
+      emit({
+        event: "message.deleted",
+        roomId: id(data.channel_id),
+        messageIds: [id(data.id)],
+      });
     }
   }
-
-  startGateway();
+  function startGateway() {
+    if (!listeners.size || socket) return;
+    const ws = new WebSocket(DISCORD_GATEWAY);
+    socket = ws;
+    let pending = Promise.resolve();
+    ws.onmessage = (event) => {
+      try {
+        const payload = record(JSON.parse(String(event.data)));
+        const op = number(payload.op);
+        if (payload.s != null) sequence = number(payload.s);
+        if (op === 10) {
+          const interval = number(record(payload.d).heartbeat_interval);
+          if (interval <= 0) malformed();
+          if (heartbeat) clearInterval(heartbeat);
+          heartbeat = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN)
+              ws.send(JSON.stringify({ op: 1, d: sequence }));
+          }, interval);
+          ws.send(
+            JSON.stringify({
+              op: 2,
+              d: {
+                token: userToken,
+                capabilities: 30717,
+                properties: FINGERPRINT,
+                presence: {
+                  status: "online",
+                  since: 0,
+                  activities: [],
+                  afk: false,
+                },
+                compress: false,
+              },
+            }),
+          );
+        } else if (op === 0) {
+          const type = string(payload.t);
+          // Serialize dispatches, obtaining identity even if CREATE precedes READY.
+          pending = pending
+            .then(() => dispatch(type, payload.d))
+            .catch(() => {
+              // A failed fetch or malformed dispatch cannot be represented as an
+              // event. Reconnect rather than continuing with inconsistent state.
+              if (socket === ws) ws.close();
+            });
+        }
+      } catch {
+        // Invalid Gateway envelopes cannot safely drive state or heartbeats.
+        ws.close();
+      }
+    };
+    ws.onclose = () => {
+      if (socket !== ws) return;
+      if (heartbeat) clearInterval(heartbeat);
+      heartbeat = undefined;
+      socket = undefined;
+      if (listeners.size)
+        reconnect = setTimeout(() => {
+          reconnect = undefined;
+          startGateway();
+        }, 3000);
+    };
+  }
 
   return {
-    async listRooms(): Promise<{ rooms: Room[]; complete: boolean }> {
-      await getCurrentUser();
-      const dmChannels = await request<RawDiscordChannel[]>(
-        "/users/@me/channels",
+    async listRooms() {
+      const user = await getUser();
+      const channels = array(await request("/users/@me/channels")).map(
+        (value) => parseChannel(value),
       );
-
-      const rooms: Room[] = [];
-      for (const dm of dmChannels) {
-        const mapped = mapUserChannel(dm, undefined, 0);
-        if (mapped) rooms.push(mapped);
-      }
-
-      const guilds =
-        await request<Array<{ id: string; name: string }>>("/users/@me/guilds");
-      for (const guild of guilds) {
-        guildNames.set(guild.id, guild.name);
-        try {
-          const channels = await request<RawDiscordChannel[]>(
-            `/guilds/${guild.id}/channels`,
-          );
-          for (const ch of channels) {
-            const mapped = mapUserChannel(ch, guild.name, 0);
-            if (mapped) rooms.push(mapped);
-          }
-        } catch {}
-      }
-
-      rooms.sort((left, right) => {
-        const a = left.lastActivityAt ? Date.parse(left.lastActivityAt) : 0;
-        const b = right.lastActivityAt ? Date.parse(right.lastActivityAt) : 0;
-        return b - a || left.title.localeCompare(right.title, "ko-KR");
+      const guilds = array(await request("/users/@me/guilds")).map((value) => {
+        const guild = record(value);
+        return { id: id(guild.id), name: string(guild.name) };
       });
-
-      return { rooms: rooms.slice(0, 500), complete: rooms.length <= 500 };
-    },
-
-    async readMessages(query: {
-      roomId: string;
-      limit?: number;
-      before?: string;
-    }): Promise<{ messages: Message[]; hasEarlier: boolean }> {
-      const user = await getCurrentUser();
-      const limit = Math.min(query.limit ?? 50, 100);
-      const params = new URLSearchParams({ limit: String(limit) });
-      if (query.before) params.set("before", query.before);
-
-      const rawMessages = await request<RawDiscordMessage[]>(
-        `/channels/${query.roomId}/messages?${params}`,
+      let complete = true;
+      let next = 0;
+      await Promise.all(
+        Array.from(
+          { length: Math.min(GUILD_CONCURRENCY, guilds.length) },
+          async () => {
+            for (;;) {
+              const guild = guilds[next++];
+              if (!guild) return;
+              try {
+                channels.push(
+                  ...array(await request(`/guilds/${guild.id}/channels`)).map(
+                    (value) => parseChannel(value, guild.name),
+                  ),
+                );
+              } catch {
+                // One unavailable guild must not hide the rooms that did load.
+                complete = false;
+              }
+            }
+          },
+        ),
       );
-      const messages: Message[] = rawMessages
-        .reverse()
-        .map((m) => mapUserMessage(m, user.id));
-
+      const rooms: Room[] = [];
+      next = 0;
+      await Promise.all(
+        Array.from(
+          { length: Math.min(GUILD_CONCURRENCY, channels.length) },
+          async () => {
+            for (;;) {
+              const channel = channels[next++];
+              if (!channel) return;
+              if (!mapUserChannel(channel)) continue;
+              if (channel.lastMessageId) {
+                try {
+                  const latest = await page(
+                    channel.id,
+                    new URLSearchParams({ limit: "1" }),
+                  );
+                  const last = latest[0];
+                  if (last)
+                    channel.lastMessage = {
+                      content: last.content,
+                      fromMe: last.authorId === user.id,
+                    };
+                } catch {
+                  // Room identity remains useful when its preview is unavailable.
+                  complete = false;
+                }
+              }
+              const mapped = mapUserChannel(channel);
+              if (mapped) rooms.push(mapped);
+            }
+          },
+        ),
+      );
+      rooms.sort(
+        (left, right) =>
+          (right.lastActivityAt ? Date.parse(right.lastActivityAt) : 0) -
+            (left.lastActivityAt ? Date.parse(left.lastActivityAt) : 0) ||
+          left.title.localeCompare(right.title, "en"),
+      );
       return {
-        messages,
-        hasEarlier: rawMessages.length === limit,
+        rooms: rooms.slice(0, ROOM_LIMIT),
+        complete: complete && rooms.length <= ROOM_LIMIT,
       };
     },
-
-    async messagesAfter(roomId: string, afterId: string): Promise<Message[]> {
-      const user = await getCurrentUser();
-      const rawMessages = await request<RawDiscordMessage[]>(
-        `/channels/${roomId}/messages?after=${afterId}&limit=100`,
-      );
-      return rawMessages
-        .sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? 1 : -1))
-        .map((m) => mapUserMessage(m, user.id));
+    async readMessages({ roomId, limit, before }) {
+      pathRoom(roomId);
+      if (before !== undefined) pathMessage(before);
+      const size = Math.min(limit, 100);
+      const params = new URLSearchParams({ limit: String(size) });
+      if (before !== undefined) params.set("before", before);
+      const fetched = (await page(roomId, params)).sort(compareIds);
+      const oldest = fetched[0];
+      const hasEarlier =
+        fetched.length === size && oldest
+          ? (
+              await page(
+                roomId,
+                new URLSearchParams({ before: oldest.id, limit: "1" }),
+              )
+            ).length > 0
+          : false;
+      return { messages: fetched.map(mapDiscordMessage), hasEarlier };
     },
-
-    subscribe(listener: (update: StreamUpdate) => void): () => void {
-      streamListeners.add(listener);
-      return () => {
-        streamListeners.delete(listener);
-      };
-    },
-
-    async send(
-      roomId: string,
-      text: string,
-      options?: { replyTo?: string },
-    ): Promise<Message> {
-      const user = await getCurrentUser();
-      const body: Record<string, unknown> = { content: text };
-      if (options?.replyTo) {
-        body.message_reference = { message_id: options.replyTo };
+    async messagesAfter(roomId, afterId) {
+      pathRoom(roomId);
+      pathMessage(afterId);
+      await message(roomId, afterId);
+      const result: DiscordMessageLike[] = [];
+      let after = afterId;
+      for (;;) {
+        const fetched = (
+          await page(roomId, new URLSearchParams({ after, limit: "100" }))
+        ).sort(compareIds);
+        result.push(...fetched);
+        const last = fetched.at(-1);
+        if (!last || fetched.length < 100) return result.map(mapDiscordMessage);
+        if (BigInt(last.id) <= BigInt(after)) malformed();
+        after = last.id;
       }
-
-      const sent = await request<RawDiscordMessage>(
-        `/channels/${roomId}/messages`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-
-      return mapUserMessage(sent, user.id);
     },
-
-    async edit(
-      roomId: string,
-      messageId: string,
-      text: string,
-    ): Promise<Message> {
-      const user = await getCurrentUser();
-      const edited = await request<RawDiscordMessage>(
+    subscribe(listener) {
+      listeners.add(listener);
+      try {
+        startGateway();
+      } catch (error) {
+        listeners.delete(listener);
+        throw apiError(error);
+      }
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) stopGateway();
+      };
+    },
+    async send(roomId, text, { replyTo }) {
+      pathRoom(roomId);
+      if (replyTo !== undefined) pathMessage(replyTo);
+      const user = await getUser();
+      const sent = await request(`/channels/${roomId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: text,
+          allowed_mentions: { parse: ["users"], replied_user: true },
+          ...(replyTo === undefined
+            ? {}
+            : {
+                message_reference: {
+                  message_id: replyTo,
+                  fail_if_not_exists: true,
+                },
+              }),
+        }),
+      });
+      return mapDiscordMessage(parseMessage(sent, user.id));
+    },
+    async edit(roomId, messageId, text) {
+      pathRoom(roomId);
+      pathMessage(messageId);
+      const user = await getUser();
+      const edited = await request(
         `/channels/${roomId}/messages/${messageId}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: text }),
+          body: JSON.stringify({
+            content: text,
+            allowed_mentions: { parse: ["users"], replied_user: true },
+          }),
         },
       );
-      return mapUserMessage(edited, user.id);
+      return mapDiscordMessage(parseMessage(edited, user.id));
     },
-
-    async deleteMessage(roomId: string, messageId: string): Promise<void> {
-      await request<void>(`/channels/${roomId}/messages/${messageId}`, {
+    async deleteMessage(roomId, messageId) {
+      pathRoom(roomId);
+      pathMessage(messageId);
+      await request(`/channels/${roomId}/messages/${messageId}`, {
         method: "DELETE",
       });
     },
-
-    async react(
-      roomId: string,
-      messageId: string,
-      emojis: string[],
-    ): Promise<Reaction[]> {
-      const user = await getCurrentUser();
-      if (emojis[0]) {
-        const emoji = encodeURIComponent(emojis[0]);
-        await request<void>(
-          `/channels/${roomId}/messages/${messageId}/reactions/${emoji}/@me`,
-          {
-            method: "PUT",
-          },
+    async react(roomId, messageId, emojis) {
+      pathRoom(roomId);
+      pathMessage(messageId);
+      const held = await message(roomId, messageId);
+      const mine = held.reactions
+        .filter((reaction) => reaction.me && !reaction.emojiId)
+        .flatMap((reaction) =>
+          reaction.emojiName ? [reaction.emojiName] : [],
         );
-      }
-      const raw = await request<RawDiscordMessage>(
-        `/channels/${roomId}/messages/${messageId}`,
+      const plan = reactionPlan(mine, emojis);
+      const retained = held.reactions.filter(
+        (reaction) =>
+          !(
+            reaction.me &&
+            reaction.count <= 1 &&
+            !reaction.emojiId &&
+            reaction.emojiName &&
+            plan.remove.includes(reaction.emojiName)
+          ),
       );
-      const mapped = mapUserMessage(raw, user.id);
-      return mapped.reactions ?? [];
+      const newDistinct = plan.add.filter(
+        (emoji) =>
+          !retained.some(
+            (reaction) => !reaction.emojiId && reaction.emojiName === emoji,
+          ),
+      );
+      if (retained.length + newDistinct.length > 20)
+        throw new AdapterError(
+          "FORBIDDEN",
+          "Discord already has the maximum number of reaction kinds on this message",
+        );
+      let changed = false;
+      try {
+        for (const emoji of plan.remove) {
+          await request(
+            `/channels/${roomId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+            { method: "DELETE" },
+          );
+          changed = true;
+        }
+        for (const emoji of plan.add) {
+          await request(
+            `/channels/${roomId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+            { method: "PUT" },
+          );
+          changed = true;
+        }
+        return (
+          mapDiscordMessage(await message(roomId, messageId)).reactions ?? []
+        );
+      } catch (error) {
+        if (changed)
+          throw new AdapterError(
+            "INTERNAL",
+            "Discord's reaction update stopped after a partial change; its outcome is unknown",
+          );
+        throw apiError(error);
+      }
     },
-
-    async markRead(roomId: string, messageId: string): Promise<void> {
-      await request<void>(`/channels/${roomId}/messages/${messageId}/ack`, {
+    async markRead(roomId, messageId) {
+      pathRoom(roomId);
+      pathMessage(messageId);
+      await request(`/channels/${roomId}/messages/${messageId}/ack`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: null }),
-      }).catch(() => {});
+      });
     },
-
-    async media(id: string, signal: AbortSignal): Promise<MediaFile> {
-      const parts = id.split(":");
-      const channelId = parts[0];
-      const messageId = parts[1];
-      const attachmentId = parts[2];
-      if (!channelId || !messageId || !attachmentId) {
-        throw new AdapterError("NOT_FOUND", "Malformed media id");
-      }
-
-      const msg = await request<RawDiscordMessage>(
-        `/channels/${channelId}/messages/${messageId}`,
+    async media(mediaId, signal) {
+      const match = /^([0-9]{17,20}):([0-9]{17,20}):([0-9]{17,20})$/.exec(
+        mediaId,
       );
-      const att = msg.attachments?.find((a) => a.id === attachmentId);
-      if (!att) {
-        throw new AdapterError("NOT_FOUND", "Attachment not found");
+      const roomId = match?.[1],
+        messageId = match?.[2],
+        attachmentId = match?.[3];
+      if (!roomId || !messageId || !attachmentId)
+        throw new AdapterError("NOT_FOUND", "No such Discord attachment");
+      const held = await message(roomId, messageId);
+      const attachment = held.attachments.find(
+        (value) => value.id === attachmentId,
+      );
+      if (!attachment)
+        throw new AdapterError("NOT_FOUND", "No such Discord attachment");
+      let url: URL;
+      try {
+        url = new URL(attachment.url);
+      } catch {
+        throw new AdapterError("NOT_FOUND", "No such Discord attachment");
       }
-
-      const res = await fetchFn(att.url, { signal });
-      if (!res.ok || !res.body) {
-        throw new AdapterError(
-          "NOT_FOUND",
-          "Failed to fetch attachment from CDN",
-        );
-      }
-
+      if (url.protocol !== "https:" || !CDN_HOSTS.has(url.hostname))
+        throw new AdapterError("NOT_FOUND", "No such Discord attachment");
+      const response = await discord(() =>
+        fetchFn(url, { signal, redirect: "error" }),
+      );
+      if (!response.ok) throw apiError({ status: response.status });
+      if (!response.body)
+        throw new AdapterError("NOT_FOUND", "The Discord attachment is gone");
       return {
-        body: res.body as ReadableStream<Uint8Array>,
-        ...(att.content_type ? { mimeType: att.content_type } : {}),
-        name: att.filename,
+        body: response.body,
+        name: attachment.name,
+        ...(attachment.contentType ? { mimeType: attachment.contentType } : {}),
       };
-    },
-
-    stop() {
-      isClosed = true;
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
-      if (gatewayWs) {
-        try {
-          gatewayWs.close();
-        } catch {}
-      }
     },
   };
 }
