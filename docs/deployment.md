@@ -17,13 +17,11 @@ Socket Mode 연결이 둘이면 Slack 이 이벤트를 나눠 보내므로 한 �
 
 ```sh
 sh ~/tsuba-slack-start.sh                                  # 127.0.0.1:8793, 로그는 ~/tsuba/slack-serve.log
-sudo tailscale serve --bg --https=8793 http://127.0.0.1:8793  # tailnet 전용
 ```
 
 Discord 어댑터(봇)는 같은 저장소·같은 `.env` 에서 `127.0.0.1:8792` 로 따로 돕니다
 (`sh ~/tsuba-discord-start.sh`, 로그는 `~/tsuba/discord-serve.log`; 2026-10-01 부터 VPS 에서). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
-쓰면 게이트웨이 연결이 서로를 끊으므로 한 곳에서만 띄웁니다. tailnet 으로 내보낼 때는
-`sudo tailscale serve --bg --https=8792 http://127.0.0.1:8792` 입니다.
+쓰면 게이트웨이 연결이 서로를 끊으므로 한 곳에서만 띄웁니다. tailnet 에서는 `https://oci.tailcbc039.ts.net/discord` 입니다.
 
 **한 세션 파일을 두 곳에서 동시에 쓰지 않습니다.** 기계마다 따로 `login` 해서 각자의
 세션(= Telegram 의 "기기" 하나)을 가집니다. 세션 파일은 계정 전체 권한이므로 복사해
@@ -64,15 +62,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now tsuba-telegram
 | --- | --- |
 | VPS 에서 도는 saya (리버스 프록시) | `http://127.0.0.1:8790` |
 | PC 에서 도는 saya | `http://127.0.0.1:18790` — PC 의 `proxylauncher.ps1` 이 `ssh -L 127.0.0.1:18790:127.0.0.1:8790` 을 유지 |
-| tailnet 의 아무 기기 | `https://oci.tailcbc039.ts.net:8790` — VPS 의 `tailscale serve` (tailnet 전용, Funnel 아님) |
+| tailnet 의 아무 기기 | `https://oci.tailcbc039.ts.net/telegram`, `/slack`, `/discord` — VPS 의 `tailscale serve` 가 주소 하나에서 경로로 나눔 (tailnet 전용, Funnel 아님) |
 | PC 에서 직접 띄운 tsuba | `http://127.0.0.1:8790` |
 
 Tailscale 경로는 어댑터를 loopback 에 둔 채 tailscaled 가 tailnet 에서만 HTTPS 로 받아
-넘깁니다. 설정은 재부팅에도 남습니다.
+넘깁니다. 어댑터는 메신저마다 따로 돌지만(8790 Telegram, 8792 Discord, 8793 Slack) 밖에서는 주소
+하나(443)에 경로로 붙습니다. tailscaled 가 경로 앞부분을 떼고 넘기므로 어댑터는 `/health` 처럼 그대로
+받습니다. 설정은 재부팅에도 남습니다(2026-10-01, 그 전의 포트별 주소 :8790·:8792·:8793 은 껐음).
 
 ```sh
-sudo tailscale serve --bg --https=8790 http://127.0.0.1:8790   # 켜기
-sudo tailscale serve --https=8790 off                         # 끄기
+sudo tailscale serve --bg --https=443 --set-path /telegram http://127.0.0.1:8790
+sudo tailscale serve --bg --https=443 --set-path /discord  http://127.0.0.1:8792
+sudo tailscale serve --bg --https=443 --set-path /slack    http://127.0.0.1:8793
+sudo tailscale serve status                                      # 확인
+sudo tailscale serve --https=443 --set-path /slack off           # 하나 끄기
 ```
 
 어느 경로든 베어러 토큰은 그대로 필요합니다. tailnet 안이라고 인증을 생략하지 않습니다.

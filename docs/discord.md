@@ -104,7 +104,7 @@ bun adapters/discord/src/cli.ts serve   # 127.0.0.1:8792
 
 봇을 새로 만든 개인 서버에 초대해, 개수와 상태만 기록합니다.
 
-- 서버 1, 방 1(텍스트 채널), 쓰기 가능. OCI 에서 `127.0.0.1:8792`, tailnet `oci.tailcbc039.ts.net:8792`.
+- 서버 1, 방 1(텍스트 채널), 쓰기 가능. OCI 에서 `127.0.0.1:8792`, tailnet `https://oci.tailcbc039.ts.net/discord`.
 - 보내기(`@everyone`·`<` 를 담은 글이 그대로 왕복, 아무도 부르지 않음), 답장(`replyTo` 가 원문), 수정(`editedAt`),
   반응 달기·떼기, 읽기, 삭제가 모두 200.
 - 스트림: `message`·`cursor`, `message.edited`, `reactions.updated`, `message.deleted` 를 받음.
