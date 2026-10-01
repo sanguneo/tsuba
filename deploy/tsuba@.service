@@ -1,0 +1,25 @@
+# One unit per adapter: tsuba@telegram (127.0.0.1:8790), tsuba@discord (8792),
+# tsuba@slack (8793). The instance name is the directory under adapters/.
+# Each reads ~/tsuba/.env (600) through Bun from the working directory and
+# logs to the journal: journalctl -u tsuba@slack -f
+[Unit]
+Description=tsuba %i adapter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tsuba
+ExecStart=/home/ubuntu/.bun/bin/bun adapters/%i/src/cli.ts serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/tsuba/sessions
+
+[Install]
+WantedBy=multi-user.target

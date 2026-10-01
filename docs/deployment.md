@@ -12,15 +12,11 @@
 
 Slack 어댑터도 VPS 에서 돕니다(2026-10-01). 회사망 PC 에서는 Slack 이 막혀 있지만 VPS 에서는 회사
 워크스페이스가 IP 를 막지 않아 같은 토큰으로 됩니다. 앱 생성·설치는 Slack 에 로그인된 사내 기계
-`sknah@192.168.0.8` 의 브라우저에서 했고, 그 기계의 예약 작업 `tsuba-slack` 은 꺼 두었습니다(한 앱의
+`sknah@192.168.0.8` 의 브라우저에서 했고, 그 기계의 사본(토큰, 예약 작업 `tsuba-slack`)은 지웠습니다(한 앱의
 Socket Mode 연결이 둘이면 Slack 이 이벤트를 나눠 보내므로 한 곳에서만 띄웁니다).
 
-```sh
-sh ~/tsuba-slack-start.sh                                  # 127.0.0.1:8793, 로그는 ~/tsuba/slack-serve.log
-```
-
 Discord 어댑터(봇)는 같은 저장소·같은 `.env` 에서 `127.0.0.1:8792` 로 따로 돕니다
-(`sh ~/tsuba-discord-start.sh`, 로그는 `~/tsuba/discord-serve.log`; 2026-10-01 부터 VPS 에서). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
+(2026-10-01 부터 VPS 에서). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
 쓰면 게이트웨이 연결이 서로를 끊으므로 한 곳에서만 띄웁니다. tailnet 에서는 `https://oci.tailcbc039.ts.net/discord` 입니다.
 
 **한 세션 파일을 두 곳에서 동시에 쓰지 않습니다.** 기계마다 따로 `login` 해서 각자의
@@ -49,12 +45,21 @@ git clone git@github.com:sanguneo/tsuba.git ~/tsuba && cd ~/tsuba
 
 CLI 는 `umask 077` 로 돌기 때문에 `sessions/` 는 700, 세션 파일은 600 으로 만들어집니다.
 
-서비스로 돌릴 때는 `deploy/tsuba-telegram.service` 를 씁니다(아직 등록하지 않음).
+세 어댑터 모두 템플릿 유닛 `deploy/tsuba@.service` 하나로 돕니다(2026-10-01 등록). 인스턴스 이름이
+`adapters/` 아래 디렉터리 이름이고, 각자 `.env` 를 작업 디렉터리에서 읽습니다. 재부팅하면 다시 뜨고,
+죽으면 5초 뒤 다시 띄웁니다. 로그는 journal 에 남습니다. 손으로 `serve` 를 따로 띄우면 같은 계정 연결이
+둘이 되므로, VPS 에서는 유닛으로만 돌립니다.
 
 ```sh
-sudo cp deploy/tsuba-telegram.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now tsuba-telegram
+sudo install -m 644 deploy/tsuba@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tsuba@telegram tsuba@discord tsuba@slack
+sudo systemctl restart tsuba@slack          # 코드를 받은 뒤 하나 다시 띄우기
+journalctl -u tsuba@slack -f                 # 로그
 ```
+
+유닛은 홈을 읽기 전용으로 두고 `sessions/` 만 쓰게 합니다. 어댑터가 다른 곳에 써야 하게 되면
+`ReadWritePaths` 에 더합니다.
 
 ## 닿는 길
 
