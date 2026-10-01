@@ -10,9 +10,15 @@
 | VPS | 기본. 늘 켜져 있어 업데이트 공백이 없음 | 프록시 불필요 |
 | PC | 개발, 또는 VPS 없이 쓸 때 | Telegram 이 막힌 네트워크면 `TSUBA_TELEGRAM_PROXY` |
 
-Slack 어댑터는 회사망 PC 에서 Slack 이 막혀 있어 Slack 에 닿는 기계에서 띄웁니다(2026-10-01:
-VPS 와 사내 기계 `sknah@192.168.0.8` 모두 `slack.com` 에 닿음). 기본 `127.0.0.1:8793`, tailnet 으로
-내보낼 때는 그 기계에서 `tailscale serve --bg --https=8793 http://127.0.0.1:8793` 입니다.
+Slack 어댑터도 VPS 에서 돕니다(2026-10-01). 회사망 PC 에서는 Slack 이 막혀 있지만 VPS 에서는 회사
+워크스페이스가 IP 를 막지 않아 같은 토큰으로 됩니다. 앱 생성·설치는 Slack 에 로그인된 사내 기계
+`sknah@192.168.0.8` 의 브라우저에서 했고, 그 기계의 예약 작업 `tsuba-slack` 은 꺼 두었습니다(한 앱의
+Socket Mode 연결이 둘이면 Slack 이 이벤트를 나눠 보내므로 한 곳에서만 띄웁니다).
+
+```sh
+sh ~/tsuba-slack-start.sh                                  # 127.0.0.1:8793, 로그는 ~/tsuba/slack-serve.log
+sudo tailscale serve --bg --https=8793 http://127.0.0.1:8793  # tailnet 전용
+```
 
 Discord 어댑터(봇)는 같은 저장소·같은 `.env` 에서 `127.0.0.1:8792` 로 따로 돕니다
 (`bun adapters/discord/src/cli.ts serve`). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
