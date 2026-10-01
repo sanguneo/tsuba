@@ -100,16 +100,16 @@ bun adapters/discord/src/cli.ts serve   # 127.0.0.1:8792
 - HTTP 토큰은 `TSUBA_DISCORD_HTTP_TOKEN`(없으면 `TSUBA_TOKEN`), 포트 `TSUBA_DISCORD_PORT`(기본
   8792), 주소 `TSUBA_HOST`. Telegram 어댑터(8790)와 같은 저장소·같은 `.env` 에서 나란히 돌 수 있습니다.
 
-## 남은 일 (2026-10-01)
+## 실제 확인 (2026-10-01)
 
-- [x] 앱 `tsuba` 와 봇 사용자 생성, **Message Content Intent** 켬.
-- [ ] 봇을 넣을 서버 마련: 개인 서버를 만들거나 관리 권한이 있는 서버를 구함.
-- [ ] 토큰 초기화 → VPS `~/tsuba/.env` 의 `TSUBA_DISCORD_TOKEN` (권한 600).
-- [ ] 초대: `https://discord.com/oauth2/authorize?client_id=1555082348641390742&scope=bot&permissions=68672`
-      (채널 보기, 메시지 보내기, 메시지 기록 보기, 반응 추가).
-- [ ] `bun adapters/discord/src/cli.ts check` 로 서버·방 개수 확인 → `serve` (8792),
-      `tailscale serve --https=8792`, saya `.env` 에 `SAYA_ADAPTERS=telegram,discord`.
-- [ ] (선택) 공개 봇 끄기: 설치 탭의 설치 링크를 "없음"으로 저장한 뒤 봇 탭에서 끔.
+봇을 새로 만든 개인 서버에 초대해, 개수와 상태만 기록합니다.
+
+- 서버 1, 방 1(텍스트 채널), 쓰기 가능. OCI 에서 `127.0.0.1:8792`, tailnet `oci.tailcbc039.ts.net:8792`.
+- 보내기(`@everyone`·`<` 를 담은 글이 그대로 왕복, 아무도 부르지 않음), 답장(`replyTo` 가 원문), 수정(`editedAt`),
+  반응 달기·떼기, 읽기, 삭제가 모두 200.
+- 스트림: `message`·`cursor`, `message.edited`, `reactions.updated`, `message.deleted` 를 받음.
+- 처음에는 뗀 반응이 남아 보였습니다. discord.js 메시지 캐시 때문이라 캐시를 껐습니다(`5f68562`, `d7d0886`).
+- 남은 선택 사항: 공개 봇 끄기(설치 탭의 설치 링크를 "없음"으로 저장한 뒤 봇 탭에서 끔).
 
 ## 하지 않는 것
 

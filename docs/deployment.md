@@ -21,7 +21,7 @@ sudo tailscale serve --bg --https=8793 http://127.0.0.1:8793  # tailnet 전용
 ```
 
 Discord 어댑터(봇)는 같은 저장소·같은 `.env` 에서 `127.0.0.1:8792` 로 따로 돕니다
-(`bun adapters/discord/src/cli.ts serve`). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
+(`sh ~/tsuba-discord-start.sh`, 로그는 `~/tsuba/discord-serve.log`; 2026-10-01 부터 VPS 에서). 봇 토큰은 세션 파일과 달리 여러 곳에서 동시에
 쓰면 게이트웨이 연결이 서로를 끊으므로 한 곳에서만 띄웁니다. tailnet 으로 내보낼 때는
 `sudo tailscale serve --bg --https=8792 http://127.0.0.1:8792` 입니다.
 
