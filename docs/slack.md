@@ -107,6 +107,18 @@ bun adapters/slack/src/cli.ts serve   # 127.0.0.1:8793
 - HTTP 토큰 `TSUBA_SLACK_HTTP_TOKEN`(없으면 `TSUBA_TOKEN`), 포트 `TSUBA_SLACK_PORT`(기본 8793).
 - 회사망 PC 에서는 Slack 이 막혀 있어, Slack 에 닿는 기계에서 띄웁니다(`docs/deployment.md`).
 
+## 실제 확인 (2026-10-01)
+
+회사 워크스페이스의 새 앱 `tsuba`(사용자 토큰 + Socket Mode)로, 개수와 상태만 기록합니다.
+
+- 방 83개(DM 34, 채널·그룹 DM 49), 쓰기 불가 0. 채움 한 바퀴 뒤 최근 활동이 있는 방 45, 안 읽음이 있는 방 4.
+- 쓰기는 **내 자신과의 DM** 에서만, 남에게 알림이 가지 않게 했습니다. 보내기(`<`·`&` 왕복 그대로),
+  수정(`editedAt`), 반응 달기·떼기, 읽음 처리, 답장(`replyTo` 가 원문, 방 목록에 보임), 삭제가 모두 200.
+- 스트림: 같은 방에 대해 `message`, `message.edited`, `reactions.updated`, `message.deleted` 를 받음.
+- 첨부: 기존 이미지 하나를 `/media` 로 받아 `image/png`, sandbox CSP, 바이트 수가 신고한 크기와 같음.
+- 처음 실행에서 채널의 안 읽음·활동이 비어 있던 것(`conversations.info` 가 DM 에만 값을 줌)과 한 번도 읽지
+  않은 방의 `last_read` 가 0 이라 거절되던 것을 고쳤습니다(`f086086`, `d34e153`).
+
 ## 하지 않는 것
 
 브라우저 세션 토큰(`xoxc-`)이나 쿠키를 쓰는 접속, 내가 볼 수 없는 대화의 수집, 대량 발송.
