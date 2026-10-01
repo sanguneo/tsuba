@@ -63,7 +63,7 @@ Web API 는 HTTPS 폼 요청이고 Socket Mode 는 WebSocket 하나라서 Bun �
 | `reactions.send` | `{}` | 내 반응과 원하는 목록의 차이만큼 `reactions.remove`·`add` |
 | `read.mark` | `{}` | `conversations.mark`. Slack 의 내 읽음 위치가 바뀜 |
 | `attachments.read` | `{}` | 메시지를 다시 읽어 `url_private_download` 를 받고, `files.slack.com` 에만 토큰을 실어 받음 |
-| `avatars.read` | `{}` | `users.info` 의 `profile.image_72` 를 URL 해시가 붙은 `senderAvatar` id 로 제공. `/media` 에서 사용자를 다시 확인하고 HTTPS 허용 호스트에만 토큰 없이 요청. 리다이렉트는 허용 호스트 안에서만 최대 3번 따라감(Gravatar 가 사진 없는 사람을 Slack 기본 사진으로 보냄) |
+| `avatars.read` | `{}` | `users.info` 의 `profile.image_72` 를 URL 해시가 붙은 `senderAvatar` id 로 제공. `/media` 에서 사용자를 다시 확인하고 HTTPS 허용 호스트에만 토큰 없이 요청. 리다이렉트는 허용 호스트 안에서만 최대 3번 따라감(Gravatar 가 사진 없는 사람을 Slack 기본 사진으로 보냄. 그 경유지 `i0`~`i2.wp.com` 은 Gravatar 다음 단계일 때만) |
 
 프로필 사진 호스트는 `avatars.slack-edge.com`, `secure.gravatar.com`, `a.slack-edge.com` 만 허용합니다.
 근거: Slack [user object](https://docs.slack.dev/reference/objects/user-object/),

@@ -177,8 +177,10 @@ for (const host of [
 test("Slack avatar media follows Gravatar's redirect to Slack's default picture, and nowhere else", async () => {
   const gravatar = "https://secure.gravatar.com/avatar/synthetic.jpg";
   const fallback = "https://a.slack-edge.com/synthetic/default.png";
+  const photon = "https://i0.wp.com/a.slack-edge.com/synthetic/default.png";
   for (const [location, expected] of [
     [fallback, "served"],
+    [photon, "served"],
     ["/avatar/synthetic-next.jpg", "loops"],
     ["https://example.invalid/synthetic.png", "NOT_FOUND"],
     ["http://a.slack-edge.com/synthetic/default.png", "NOT_FOUND"],
@@ -186,7 +188,7 @@ test("Slack avatar media follows Gravatar's redirect to Slack's default picture,
     const f = fixture();
     f.setAddress(gravatar);
     f.setMediaAnswer((url) =>
-      url === fallback
+      url === fallback || url === photon
         ? new Response(new Uint8Array([4, 5, 6]), {
             headers: { "content-type": "image/png" },
           })
@@ -213,7 +215,7 @@ test("Slack avatar media follows Gravatar's redirect to Slack's default picture,
       expect(
         downloads.some(
           (call) =>
-            !/^https:\/\/(secure\.gravatar\.com|a\.slack-edge\.com)\//.test(
+            !/^https:\/\/(secure\.gravatar\.com|a\.slack-edge\.com|i0\.wp\.com)\//.test(
               call.url,
             ),
         ),
@@ -222,6 +224,24 @@ test("Slack avatar media follows Gravatar's redirect to Slack's default picture,
     } finally {
       f.backend.stop();
     }
+  }
+  // The image CDN is only Gravatar's next hop: reached from anywhere else it is refused.
+  const f = fixture();
+  f.setAddress(fallback);
+  f.setMediaAnswer((url) =>
+    url === photon
+      ? new Response(new Uint8Array([7]), {
+          headers: { "content-type": "image/png" },
+        })
+      : new Response(null, { status: 302, headers: { location: photon } }),
+  );
+  try {
+    await expect(f.media(idFor(fallback))).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(f.sent.some((call) => call.url === photon)).toBe(false);
+  } finally {
+    f.backend.stop();
   }
 });
 

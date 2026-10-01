@@ -35,6 +35,8 @@ const AVATAR_HOSTS = new Set([
   "secure.gravatar.com",
   "a.slack-edge.com",
 ]);
+// Where secure.gravatar.com redirects a person without a picture (Photon).
+const GRAVATAR_HOPS = new Set(["i0.wp.com", "i1.wp.com", "i2.wp.com"]);
 const AVATAR_ID = /^avatar:([UW][A-Z0-9]{6,128}):([a-f0-9]{24})$/;
 // users.info is Tier 4; reuse display profiles across pages for ten minutes.
 const USER_CACHE_MS = 10 * 60_000;
@@ -593,10 +595,22 @@ export function slackBackend(
           }
           if (response.status < 300 || response.status >= 400) break;
           const location = response.headers.get("location");
-          const next =
+          const resolved =
             location && URL.canParse(location, target.href)
-              ? avatarUrl(new URL(location, target).href)
+              ? new URL(location, target)
               : undefined;
+          // Gravatar serves its default through Automattic's image CDN; that
+          // host is followed only as Gravatar's own next hop, never as a start.
+          const next =
+            avatarUrl(resolved?.href) ??
+            (target.hostname === "secure.gravatar.com" &&
+            resolved?.protocol === "https:" &&
+            GRAVATAR_HOPS.has(resolved.hostname) &&
+            !resolved.username &&
+            !resolved.password &&
+            !resolved.port
+              ? resolved
+              : undefined);
           await response.body?.cancel();
           if (!next || hop >= 2)
             throw new AdapterError("NOT_FOUND", "No such Slack avatar");
