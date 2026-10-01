@@ -1,8 +1,8 @@
 # Telegram 어댑터
 
 첫 어댑터입니다. **사용자 본인 계정의 클라이언트**이고, 봇이 아닙니다
-(`account.kind: "user"`). 계약 0.2.0의 방 목록, 메시지 읽기, SSE 이어 읽기,
-텍스트 전송을 구현했습니다. 합성 데이터와 로컬 HTTP로 검증하며, 실제 계정에서의
+(`account.kind: "user"`). 계약 0.2.1의 방 목록(방별 쓰기 가능 여부 포함), 메시지 읽기,
+첨부, SSE 이어 읽기, 텍스트 전송을 구현했습니다. 합성 데이터와 로컬 HTTP로 검증하며, 실제 계정에서의
 새 구현 검증은 운영자가 별도로 합니다.
 
 ## 기반: mtcute
@@ -58,11 +58,37 @@ TSUBA_PORT=8790 bun adapters/telegram/src/cli.ts serve
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | `getHistory`의 offset으로 이전 페이지, 오래된 순서로 반환. 어댑터의 읽기 상한은 100개 |
 | `messages.stream` | `resume: cursor` | 아래 "이어 읽기" |
 | `messages.send` | `maxLength: 4096`, `receipt: stored` | `sendText`가 반환한 저장 메시지. 사용자 경로에서 측정한 4096 코드 포인트 |
+| `attachments.read` | `{}` | 사진·문서·동영상·GIF·오디오·음성·스티커를 `attachments` 로, `/media` 는 `downloadAsStream` 으로 흘려 보냄 |
 
-나머지 기능은 신고하지 않습니다. 방별 권한 차이는 Telegram의 오류로 답하며,
-계약 0.2.0에는 방별 기능 필드가 없습니다. 텍스트 전송은 한 번에 하나씩,
+나머지 기능은 신고하지 않습니다. 텍스트 전송은 한 번에 하나씩,
 실행 중 요청을 포함해 최대 4개만 받아들이며 5번째는 즉시 429입니다.
 불확실한 전송을 자동 재시도하지 않도록 mtcute의 RPC 재시도 미들웨어도 끕니다.
+
+## 방별 기능
+
+대화 목록이 이미 가진 정보로 이 계정이 글을 올릴 수 없는 방을 골라
+`"features": {"messages.send": false}` 를 붙입니다(추가 요청 없음).
+
+- 사람: 삭제된 계정, Telegram 서비스 알림(777000).
+- 나간·차단된 그룹과 채널.
+- 방송 채널: 소유자이거나 글 올리기 권한(`postMessages`)이 있는 관리자가 아니면 못 씀.
+- 방송 그룹(gigagroup): 관리자가 아니면 못 씀.
+- 그 밖의 그룹: 관리자가 아니고, 이 계정의 제한이나 방의 기본 권한이 텍스트 전송을 막으면 못 씀.
+
+목록이 모르는 제한(예: 방금 바뀐 권한)은 전송 때 Telegram이 거절하고, 그 거절은
+`403 FORBIDDEN` 으로 답합니다.
+
+## 첨부
+
+- 첨부 id는 `<roomId>:<messageId>:<uniqueFileId>` 입니다(클라이언트에는 불투명).
+  `/media` 는 그때 메시지를 다시 읽어 파일 참조를 새로 받고, 메시지의 파일이 그 id와
+  다르면 `404` 로 답합니다. 그래서 같은 id는 늘 같은 바이트입니다.
+- 사진은 가장 큰 크기를 `image/jpeg` 로, GIF(애니메이션 동영상)는 `animation` 으로 냅니다.
+- **자동 삭제(TTL) 미디어는 내지 않습니다.** Telegram에서 한 번 보라고 보낸 것을 브라우저
+  캐시에 남기지 않으려는 것입니다. 메시지는 `media` 로 남고 첨부만 없습니다.
+- 링크 미리보기는 미디어가 아닙니다(`kind: text`). 투표·위치·연락처 등은 `media` 이지만 내려받을
+  파일이 없어 첨부가 없습니다.
+- 응답 헤더(sandbox CSP, `nosniff`, 인라인 허용 목록)는 serve-kit이 정합니다.
 
 ## 이어 읽기 (SSE 커서)
 
@@ -84,8 +110,10 @@ Telegram 은 서버에 대화 기록이 있으므로, 카카오 코어처럼 로
 | Telegram | 계약 |
 | --- | --- |
 | `FLOOD_WAIT_X` / 슬로우 모드 | `429 RATE_LIMITED`, 자동 재시도 없음 |
-| 없는 peer / 잘못된 peer·channel id / 접근 불가 채널 | `404 NOT_FOUND` |
-| 그 외 오류 (세션 오류 포함) | `500 INTERNAL`, 계정 정보가 없는 일반 메시지 |
+| RPC 401 (`AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`, `SESSION_EXPIRED` 등) | `503 REAUTH_REQUIRED` — 어댑터가 도는 곳에서 `login` 을 다시 |
+| RPC 403 (`CHAT_WRITE_FORBIDDEN` 등), `CHANNEL_PRIVATE`, `USER_BANNED_IN_CHANNEL`, `CHAT_ADMIN_REQUIRED`, `CHAT_RESTRICTED`, `YOU_BLOCKED_USER`, `USER_IS_BLOCKED` | `403 FORBIDDEN` |
+| 없는 peer / 잘못된 peer·channel id / 없는 첨부 | `404 NOT_FOUND` |
+| 그 외 오류 | `500 INTERNAL`, 계정 정보가 없는 일반 메시지. 쓰기에서는 결과를 모름 |
 | 선언하지 않은 기능의 경로 | 인증 후 `501 NOT_SUPPORTED` |
 
 방과 메시지는 이름이 아닌 문자열 id로 지정합니다. `/stream`의 반복 `since`는

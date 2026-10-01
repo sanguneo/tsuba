@@ -23,21 +23,28 @@ bun run test
 | Path | What it is |
 | --- | --- |
 | `contract/openapi.json` | The adapter contract. Consumers copy it byte for byte |
-| `packages/serve-kit/` | What every adapter shares: envelope, auth, routing, capabilities |
-| `adapters/<provider>/` | One messenger each, built on `serve-kit` (none yet) |
-| `docs/` | Plans and the reference review |
+| `contract/CHANGELOG.md` | Every contract version and why it changed |
+| `packages/serve-kit/` | What every adapter shares: envelope, auth, routing, capabilities, `/media` headers |
+| `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram`) |
+| `docs/contract.md` | The contract's rules in one place, and every name in use or reserved |
+| `docs/` | Also the per-adapter notes, deployment and the reference review |
 | `tests/` | `bun test` suites; `tests/harness/` holds the no-sleep helpers |
 
 ## The contract is published here
 
 - `contract/openapi.json` is the one file every client knows. saya copies it and
   pins its SHA-256, exactly as it does the KakaoTalk contract, so editing it is
-  a release: bump `info.version`, say why in the changelog, and treat removing
-  or renaming anything as breaking.
+  a release: bump `info.version` by the caret rule (additive is PATCH while
+  MAJOR is 0; removing, renaming or changing a meaning opens a new MINOR), say
+  why in `contract/CHANGELOG.md`, and follow the order in `docs/contract.md`.
+- The document is machine-read, not only prose: `x-feature` names the one
+  feature that gates each operation, `x-reserved` marks feature ids with no
+  route yet, and serve-kit refuses to declare a reserved one.
 - **A specification nobody checks is a rumour.** `tests/contract.test.ts` asks
-  the running handler whether every documented route is routed and whether the
-  capability vocabulary in the document is the one `serve-kit` declares. Keep
-  that test failing when they drift; do not loosen it.
+  the running handler whether every documented route is routed, whether the
+  capability vocabulary in the document is the one `serve-kit` declares, which
+  feature gates each route, and whether every error answer is filed under its
+  code's status. Keep that test failing when they drift; do not loosen it.
 - `.gitattributes` keeps the file's bytes identical on Windows.
 
 ## Capabilities
@@ -54,6 +61,9 @@ lists its models and what each supports.
   or parameter means is breaking.
 - **Declare limits, not hopes.** A parameter such as `maxLength` is the limit
   the messenger enforces, measured or documented, with the source in a comment.
+- **Rooms narrow, never add.** Where one room allows less than the network
+  (a channel the account cannot post in), the room carries `features` saying
+  so; serve-kit rejects a room that names an undeclared feature.
 - **Account kind is part of the truth.** `account.kind` says whether the adapter
   acts as the user, a bot, or an official account. Discord is bot-only (user
   automation breaks its terms); WeChat personal accounts have no official API
@@ -74,6 +84,11 @@ lists its models and what each supports.
 - **`submitted` is not delivered.** Say only what the messenger confirmed; the
   send capability's `receipt` declares how much that is.
 - An uncertain send is never retried automatically.
+- **Only `INTERNAL` means "unknown".** Map every refusal the messenger states to
+  the code that says nothing changed (`FORBIDDEN`, `REAUTH_REQUIRED`,
+  `RATE_LIMITED`, `NOT_FOUND`); an unmapped error stays `INTERNAL`.
+- **Files are someone else's bytes.** An adapter hands `/media` a stream, a type
+  and a name; serve-kit alone decides the headers that keep them inert.
 
 ## Deliberately absent
 

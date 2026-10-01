@@ -1,10 +1,25 @@
-import { MtPeerNotFoundError, type TelegramClient } from "@mtcute/bun";
+import {
+  FileLocation,
+  MtPeerNotFoundError,
+  type TelegramClient,
+} from "@mtcute/bun";
 import {
   type AdapterBackend,
   AdapterError,
   type Message,
 } from "@tsuba/serve-kit";
-import { mapMessage, mapRoom } from "./mapping";
+import { mapAttachment, mapMessage, mapRoom } from "./mapping";
+
+/** 400-coded refusals that mean "not allowed here" rather than "malformed". */
+const FORBIDDEN = [
+  "CHANNEL_PRIVATE",
+  "USER_BANNED_IN_CHANNEL",
+  "CHAT_ADMIN_REQUIRED",
+  "CHAT_RESTRICTED",
+  "YOU_BLOCKED_USER",
+  "USER_IS_BLOCKED",
+];
+const MEDIA_ID = /^(-?\d+):(\d+):([A-Za-z0-9_-]+)$/;
 
 function peerId(value: string): number {
   const id = Number(value);
@@ -26,6 +41,13 @@ async function translated<T>(action: () => Promise<T>): Promise<T> {
       error && typeof error === "object" && "text" in error
         ? String(error.text)
         : "";
+    const status =
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      typeof error.code === "number"
+        ? error.code
+        : 0;
     if (
       code.startsWith("FLOOD_WAIT") ||
       code.startsWith("FLOOD_PREMIUM_WAIT") ||
@@ -35,12 +57,22 @@ async function translated<T>(action: () => Promise<T>): Promise<T> {
         "RATE_LIMITED",
         "Telegram asked the adapter to slow down",
       );
+    // Telegram answers 401 once the session is signed out, revoked or expired.
+    if (status === 401)
+      throw new AdapterError(
+        "REAUTH_REQUIRED",
+        "Telegram no longer accepts this session; sign in again where the adapter runs",
+      );
+    if (status === 403 || FORBIDDEN.includes(code))
+      throw new AdapterError(
+        "FORBIDDEN",
+        "Telegram does not let this account do that here",
+      );
     if (
       error instanceof MtPeerNotFoundError ||
       [
         "PEER_ID_INVALID",
         "CHANNEL_INVALID",
-        "CHANNEL_PRIVATE",
         "CHAT_ID_INVALID",
         "USER_ID_INVALID",
       ].includes(code)
@@ -121,5 +153,29 @@ export function telegramBackend(tg: TelegramClient): AdapterBackend {
       translated(async () =>
         mapMessage(await tg.sendText(peerId(roomId), text)),
       ),
+    media: (id, signal) =>
+      translated(async () => {
+        const missing = new AdapterError("NOT_FOUND", "No such attachment");
+        const [, roomId = "", messageIdText = "", unique] =
+          MEDIA_ID.exec(id) ?? [];
+        if (!unique) throw missing;
+        // Fetch the message now so the file reference is fresh and still this message's file.
+        const [message] = await tg.getMessages(peerId(roomId), [
+          messageId(messageIdText),
+        ]);
+        const media = message?.media;
+        const attachment = media && mapAttachment(roomId, messageIdText, media);
+        if (
+          !(media instanceof FileLocation) ||
+          !attachment ||
+          attachment.id !== id
+        )
+          throw missing;
+        return {
+          body: tg.downloadAsStream(media, { abortSignal: signal }),
+          ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+          ...(attachment.name ? { name: attachment.name } : {}),
+        };
+      }),
   };
 }

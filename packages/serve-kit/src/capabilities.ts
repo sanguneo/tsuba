@@ -51,6 +51,15 @@ export type Features = { [K in FeatureId]?: FeatureParams[K] } & {
   [K in ExtensionId]?: Record<string, unknown>;
 };
 
+/**
+ * A room's own features where they differ from the declaration: a value
+ * replaces the declared one for that room, and `false` removes it. A room
+ * narrows the declaration and never adds to it.
+ */
+export type RoomFeatures = { [K in FeatureId]?: false | FeatureParams[K] } & {
+  [K in ExtensionId]?: false | Record<string, unknown>;
+};
+
 export interface Capabilities {
   provider: { id: string; name: string };
   account: { kind: "user" | "bot" | "official" };

@@ -14,7 +14,9 @@ export type ErrorCode =
   | "NOT_SUPPORTED"
   | "RATE_LIMITED"
   | "BUSY"
-  | "INTERNAL";
+  | "INTERNAL"
+  | "FORBIDDEN"
+  | "REAUTH_REQUIRED";
 
 export const STATUS: Readonly<Record<ErrorCode, number>> = {
   UNAUTHORIZED: 401,
@@ -25,6 +27,8 @@ export const STATUS: Readonly<Record<ErrorCode, number>> = {
   RATE_LIMITED: 429,
   BUSY: 503,
   INTERNAL: 500,
+  FORBIDDEN: 403,
+  REAUTH_REQUIRED: 503,
 };
 
 const HEADERS = {

@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
+import contract from "../contract/openapi.json";
 import {
   type AdapterBackend,
   AdapterError,
   type Capabilities,
   createHandler,
   type ErrorEnvelope,
+  type MediaFile,
   type Message,
+  RESERVED_FEATURES,
   type SendAnswer,
   serve,
 } from "../packages/serve-kit/src/index";
@@ -16,8 +19,16 @@ const bearer = { authorization: `Bearer ${TOKEN}` };
 const jsonHeaders = { ...bearer, "content-type": "application/json" };
 const full: Capabilities = {
   ...sample,
-  features: { ...sample.features, "messages.stream": { resume: "cursor" } },
+  features: {
+    ...sample.features,
+    "messages.stream": { resume: "cursor" },
+    "attachments.read": {},
+  },
 };
+const bytes = new TextEncoder().encode("synthetic bytes");
+function file(extra: Omit<MediaFile, "body"> = {}): MediaFile {
+  return { body: new Blob([bytes]).stream(), ...extra };
+}
 
 function liveBackend() {
   const listeners = new Set<(message: Message) => void>();
@@ -25,6 +36,7 @@ function liveBackend() {
   return {
     backend: {
       ...fakeBackend(),
+      media: async () => file({ mimeType: "image/png" }),
       messagesAfter: async () => [message],
       subscribe(listener: (message: Message) => void) {
         listeners.add(listener);
@@ -140,15 +152,19 @@ test("auth precedes unsupported and unknown routes; every absent feature is 501"
     capabilities: { ...sample, features: {} },
     port: 0,
   });
+  const gated = Object.entries(contract.paths).flatMap(([path, item]) =>
+    Object.entries(item).flatMap(([method, operation]) =>
+      "x-feature" in operation ? [{ path, method: method.toUpperCase() }] : [],
+    ),
+  );
+  expect(gated.map(({ path }) => path).sort()).toEqual(
+    ["/media", "/messages", "/rooms", "/send", "/stream"].sort(),
+  );
   try {
-    for (const path of [
-      "/rooms",
-      "/messages",
-      "/stream",
-      "/send",
-      "/unknown",
+    for (const { path, method } of [
+      ...gated,
+      { path: "/unknown", method: "GET" },
     ]) {
-      const method = path === "/send" ? "POST" : "GET";
       await error(
         await fetch(new URL(path, server.url), { method }),
         401,
@@ -293,6 +309,8 @@ test("backend errors map to status without leaking unexpected messages", async (
       ["RATE_LIMITED", 429],
       ["NOT_FOUND", 404],
       ["BUSY", 503],
+      ["FORBIDDEN", 403],
+      ["REAUTH_REQUIRED", 503],
     ] as const) {
       backend.readMessages = async () => {
         throw new AdapterError(code, "Synthetic safe error");
@@ -401,6 +419,7 @@ test("startup rejects each declaration/implementation mismatch", () => {
     ["messages.read", "readMessages"],
     ["messages.send", "send"],
     ["messages.stream", "subscribe"],
+    ["attachments.read", "media"],
   ] as const) {
     const live = liveBackend();
     const missing = { ...live.backend } as AdapterBackend;
@@ -636,4 +655,119 @@ test("live updates during resume are buffered and overlapping history is dedupli
     history.resolve([]);
     await server.stop(true);
   }
+});
+
+test("media streams the bytes with headers that never let them run at the client's origin", async () => {
+  const seen: { id: string; aborted: boolean }[] = [];
+  const live = liveBackend();
+  const server = serve({
+    token: TOKEN,
+    capabilities: full,
+    backend: {
+      ...live.backend,
+      async media(id, signal) {
+        seen.push({ id, aborted: signal.aborted });
+        if (id === "png")
+          return file({ mimeType: "image/png", name: "사진 1.png" });
+        if (id === "html")
+          return file({
+            mimeType: "text/html; charset=utf-8",
+            name: 'x"\\\r\n.html',
+          });
+        if (id === "svg") return file({ mimeType: "image/svg+xml" });
+        throw new AdapterError("NOT_FOUND", "No such attachment");
+      },
+    },
+    port: 0,
+  });
+  try {
+    const get = (id: string) =>
+      fetch(new URL(`/media?id=${encodeURIComponent(id)}`, server.url), {
+        headers: bearer,
+      });
+    const png = await get("png");
+    expect(png.status).toBe(200);
+    expect(new Uint8Array(await png.arrayBuffer())).toEqual(bytes);
+    expect(Object.fromEntries(png.headers)).toMatchObject({
+      "content-type": "image/png",
+      "content-disposition":
+        "inline; filename=\"__ 1.png\"; filename*=UTF-8''%EC%82%AC%EC%A7%84%201.png",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "x-content-type-options": "nosniff",
+      "cache-control": "private, max-age=86400",
+    });
+    for (const id of ["html", "svg"]) {
+      const response = await get(id);
+      await response.arrayBuffer();
+      expect(response.headers.get("content-type")).toBe(
+        "application/octet-stream",
+      );
+      expect(response.headers.get("content-disposition")).toStartWith(
+        "attachment",
+      );
+      expect(response.headers.get("content-security-policy")).toBe(
+        "default-src 'none'; sandbox",
+      );
+    }
+    expect((await get("html")).headers.get("content-disposition")).toBe(
+      "attachment; filename=\"x____.html\"; filename*=UTF-8''x%22%5C%0D%0A.html",
+    );
+    await error(await get("gone"), 404, "NOT_FOUND");
+    for (const query of ["", "?id=", `?id=${"a".repeat(513)}`])
+      await error(
+        await fetch(new URL(`/media${query}`, server.url), { headers: bearer }),
+        400,
+        "INVALID_REQUEST",
+      );
+    expect(seen.map(({ id }) => id)).toEqual([
+      "png",
+      "html",
+      "svg",
+      "html",
+      "gone",
+    ]);
+    expect(seen.every(({ aborted }) => !aborted)).toBe(true);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("a reserved feature cannot be declared", () => {
+  expect(RESERVED_FEATURES.size).toBeGreaterThan(0);
+  for (const id of RESERVED_FEATURES)
+    expect(() =>
+      createHandler({
+        token: TOKEN,
+        capabilities: { ...sample, features: { ...sample.features, [id]: {} } },
+        backend: fakeBackend(),
+      }),
+    ).toThrow("reserved");
+});
+
+test("a room's features narrow the declaration and never add to it", async () => {
+  const backend = fakeBackend();
+  const { handle } = createHandler({
+    token: TOKEN,
+    capabilities: sample,
+    backend,
+  });
+  const rooms = () =>
+    handle(new Request("http://adapter/rooms", { headers: bearer }));
+  backend.listRooms = async () => ({
+    rooms: [
+      { ...room, features: { "messages.send": false } },
+      {
+        ...room,
+        id: "narrowed",
+        features: { "messages.read": { paging: "none", maxLimit: 10 } },
+      },
+    ],
+    complete: true,
+  });
+  await answer(await rooms(), "RoomsAnswer");
+  backend.listRooms = async () => ({
+    rooms: [{ ...room, features: { "messages.stream": false } }],
+    complete: true,
+  });
+  await error(await rooms(), 500, "INTERNAL");
 });

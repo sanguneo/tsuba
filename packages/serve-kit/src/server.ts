@@ -1,4 +1,3 @@
-import contract from "../../../contract/openapi.json";
 import { authorized, checkToken } from "./auth";
 import {
   type AdapterBackend,
@@ -12,9 +11,9 @@ import {
   capabilityRevision,
   FEATURE_IDS,
 } from "./capabilities";
+import { CONTRACT_VERSION, RESERVED_FEATURES } from "./contract";
 import { failure, ok } from "./envelope";
-
-export const CONTRACT_VERSION: string = contract.info.version;
+import { mediaHeaders } from "./media";
 
 export interface AdapterOptions {
   token: string;
@@ -34,22 +33,17 @@ export function createHandler(options: AdapterOptions) {
   const backend = options.backend ?? {};
   const features = options.capabilities.features;
   for (const id of FEATURE_IDS) {
-    if (
-      features[id] &&
-      ![
-        "rooms.list",
-        "messages.read",
-        "messages.stream",
-        "messages.send",
-      ].includes(id)
-    )
-      throw new Error(`${id} has no backend method in this contract version`);
+    if (features[id] && RESERVED_FEATURES.has(id))
+      throw new Error(
+        `${id} is reserved: contract ${CONTRACT_VERSION} has no route for it`,
+      );
   }
   for (const [feature, method] of [
     ["rooms.list", "listRooms"],
     ["messages.read", "readMessages"],
     ["messages.stream", "subscribe"],
     ["messages.send", "send"],
+    ["attachments.read", "media"],
   ] as const) {
     if (Boolean(features[feature]) !== (typeof backend[method] === "function"))
       throw new Error(
@@ -225,7 +219,12 @@ export function createHandler(options: AdapterOptions) {
       auth: true,
       answer: async () => {
         if (!features["rooms.list"]) return unsupported();
-        return ok({ ...(await backend.listRooms?.()) });
+        const answer = await backend.listRooms?.();
+        for (const room of answer?.rooms ?? [])
+          for (const id of Object.keys(room.features ?? {}))
+            if (!Object.hasOwn(features, id))
+              throw new Error(`A room cannot add the undeclared feature ${id}`);
+        return ok({ ...answer });
       },
     },
     "/messages": {
@@ -256,6 +255,19 @@ export function createHandler(options: AdapterOptions) {
             ...(before === null ? {} : { before }),
           })),
         });
+      },
+    },
+    "/media": {
+      method: "GET",
+      auth: true,
+      answer: async (request) => {
+        if (!features["attachments.read"] || !backend.media)
+          return unsupported();
+        const id = new URL(request.url).searchParams.get("id");
+        if (!id || id.length > 512)
+          throw new AdapterError("INVALID_REQUEST", "Invalid media id");
+        const file = await backend.media(id, request.signal);
+        return new Response(file.body, { headers: mediaHeaders(file) });
       },
     },
     "/stream": { method: "GET", auth: true, answer: stream },

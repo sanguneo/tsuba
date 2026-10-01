@@ -9,11 +9,13 @@
 
 ## 상태
 
-계약 0.2.0의 서버와 첫 어댑터를 구현했습니다.
+계약 0.2.1의 서버와 첫 어댑터를 구현했습니다.
 
-- `packages/serve-kit` — 인증, 기능 신고 검증, 방/메시지 라우팅, SSE 이어 읽기, 직렬 전송
-- `contract/openapi.json` — `/health`, `/capabilities`, `/rooms`, `/messages`, `/stream`, `/send`
-- `adapters/telegram` — mtcute 기반 사용자 계정 클라이언트. 방 목록, 이전 메시지, 커서 스트림, 텍스트 전송
+- `contract/openapi.json` — `/health`, `/capabilities`, `/rooms`, `/messages`, `/media`, `/stream`, `/send`
+- `contract/CHANGELOG.md` — 계약 버전마다 바뀐 것과 이유
+- `docs/contract.md` — 계약 규칙(버전 호환, 오류 코드, 방별 기능, 라우트·이벤트 이름, 첨부)과 예약된 이름 대장
+- `packages/serve-kit` — 인증, 기능 신고 검증, 방/메시지 라우팅, SSE 이어 읽기, 직렬 전송, 첨부 응답 헤더
+- `adapters/telegram` — mtcute 기반 사용자 계정 클라이언트. 방 목록(방별 쓰기 가능 여부 포함), 이전 메시지, 첨부, 커서 스트림, 텍스트 전송
 - `docs/telegram.md` — 실행 방법과 구현된 기능/한계
 - `docs/references.md` — 구현 전에 검토한 참고 저장소와 가져올 것
 

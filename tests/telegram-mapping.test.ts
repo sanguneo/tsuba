@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  canSendText,
+  type MediaLike,
   type MessageLike,
+  mapAttachment,
   mapMessage,
   mapRoom,
   type PeerLike,
@@ -24,10 +27,11 @@ const input: MessageLike = {
 };
 
 test("rooms preserve marked ids, kinds, unread and absent optional keys", () => {
+  const admin = { isAdmin: true, adminRights: { postMessages: true } };
   for (const [peer, kind] of [
     [user, "direct"],
     [chat, "group"],
-    [{ ...chat, chatType: "channel" }, "channel"],
+    [{ ...chat, chatType: "channel", ...admin }, "channel"],
     [{ ...chat, chatType: "community" }, "group"],
   ] as const) {
     const room = mapRoom({ peer, unreadCount: 3, lastMessage: null });
@@ -38,6 +42,36 @@ test("rooms preserve marked ids, kinds, unread and absent optional keys", () => 
       kind,
       unread: 3,
     });
+  }
+});
+
+test("a room the account cannot post in narrows messages.send to false", () => {
+  const channel: PeerLike = { ...chat, chatType: "channel" };
+  const allowed = { canSendText: true };
+  const denied = { canSendText: false };
+  for (const [peer, expected] of [
+    [user, true],
+    [{ ...user, isDeleted: true }, false],
+    [{ ...user, id: 777000 }, false],
+    [chat, true],
+    [{ ...chat, isMember: false }, false],
+    [{ ...chat, isBanned: true }, false],
+    [{ ...chat, defaultPermissions: denied }, false],
+    [{ ...chat, permissions: denied, defaultPermissions: allowed }, false],
+    [{ ...chat, isAdmin: true, defaultPermissions: denied }, true],
+    [channel, false],
+    [{ ...channel, isAdmin: true, adminRights: {} }, false],
+    [{ ...channel, isAdmin: true, adminRights: { postMessages: true } }, true],
+    [{ ...channel, isCreator: true }, true],
+    [{ ...chat, chatType: "gigagroup" }, false],
+    [{ ...chat, chatType: "gigagroup", isAdmin: true }, true],
+  ] as const) {
+    expect(canSendText(peer)).toBe(expected);
+    const room = mapRoom({ peer, unreadCount: 0 });
+    expect(schema("Room")(room)).toBe(true);
+    expect(room.features).toEqual(
+      expected ? undefined : { "messages.send": false },
+    );
   }
 });
 
@@ -88,15 +122,113 @@ test("message mapping has string ids, names, ISO dates and no null optionals", (
 
 test("service wins over media, including unsupported raw actions and media", () => {
   for (const [extra, kind] of [
-    [{ isService: true, media: {} }, "service"],
+    [{ isService: true, media: { type: "photo" } }, "service"],
     [{ action: {} }, "service"],
     [{ raw: { action: {} } }, "service"],
-    [{ media: {} }, "media"],
+    [{ media: { type: "poll" } }, "media"],
     [{ raw: { media: {} } }, "media"],
+    [{ media: { type: "webpage" } }, "text"],
     [{ media: null, action: null }, "text"],
   ] as const) {
     const message = mapMessage({ ...input, ...extra, text: "" });
     expect(schema("Message")(message)).toBe(true);
     expect(message.kind).toBe(kind);
+  }
+});
+
+test("files become attachments with ids that name the room, message and file", () => {
+  const photo: MediaLike = {
+    type: "photo",
+    uniqueFileId: "AQADsynthetic",
+    width: 1280,
+    height: 720,
+    fileSize: 81_920,
+  };
+  const message = mapMessage({ ...input, text: "", media: photo });
+  expect(schema("Message")(message)).toBe(true);
+  expect(message.kind).toBe("media");
+  expect(message.attachments).toEqual([
+    {
+      id: "-100123:7:AQADsynthetic",
+      kind: "image",
+      mimeType: "image/jpeg",
+      size: 81_920,
+      width: 1280,
+      height: 720,
+    },
+  ]);
+  for (const [media, expected] of [
+    [
+      {
+        type: "document",
+        uniqueFileId: "f",
+        mimeType: "application/pdf",
+        fileName: "Synthetic.pdf",
+        fileSize: 0,
+      },
+      {
+        kind: "file",
+        name: "Synthetic.pdf",
+        mimeType: "application/pdf",
+        size: 0,
+      },
+    ],
+    [
+      {
+        type: "video",
+        uniqueFileId: "f",
+        mimeType: "video/mp4",
+        isAnimation: true,
+        width: 320,
+        height: 240,
+        duration: 2,
+      },
+      {
+        kind: "animation",
+        mimeType: "video/mp4",
+        width: 320,
+        height: 240,
+        durationSeconds: 2,
+      },
+    ],
+    [
+      {
+        type: "voice",
+        uniqueFileId: "f",
+        mimeType: "audio/ogg",
+        duration: 3,
+        fileName: null,
+      },
+      { kind: "voice", mimeType: "audio/ogg", durationSeconds: 3 },
+    ],
+    [
+      {
+        type: "sticker",
+        uniqueFileId: "f",
+        mimeType: "image/webp",
+        width: 0,
+        height: 512,
+      },
+      { kind: "sticker", mimeType: "image/webp" },
+    ],
+  ] as const) {
+    const attachment = mapAttachment("r", "1", media);
+    expect(attachment).toEqual({ id: "r:1:f", ...expected });
+    expect(schema("Attachment")(attachment)).toBe(true);
+  }
+});
+
+test("no attachment for self-destructing media, link previews or unknown media", () => {
+  for (const media of [
+    { type: "photo", uniqueFileId: "f", ttlSeconds: 10 },
+    { type: "voice", uniqueFileId: "f", ttlSeconds: 2147483647 },
+    { type: "webpage" },
+    { type: "poll" },
+    { type: "document" },
+  ] as const) {
+    expect(mapAttachment("r", "1", media)).toBeNull();
+    const message = mapMessage({ ...input, media });
+    expect(schema("Message")(message)).toBe(true);
+    expect(message.attachments).toBeUndefined();
   }
 });

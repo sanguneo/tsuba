@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tsuba — messenger adapter contract",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
-    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows.\n\n**Consumers must ignore keys they do not know.** Adding a key, a feature id or an error code is not breaking; removing or renaming one, or changing what an existing one means, is, and lands in a minor version with the reason in the changelog.\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. An enum value a client does not know means the least that field can mean: treat it as the first value listed.\n\n**Security posture.** A shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header.\n\nEvery documented route is routed by every adapter. A route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`; an adapter declares a feature exactly when it performs it end to end.",
+    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`. Every name in use or reserved is listed in tsuba's `docs/contract.md`, and every version is in `contract/CHANGELOG.md` beside this file.\n\n## Envelope\n\nEvery JSON response is an envelope. Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows. `/media` answers bytes and `/stream` answers events; their failures before the first byte are envelopes too.\n\n## Versions\n\n`info.version` is `MAJOR.MINOR.PATCH`, and `GET /capabilities` answers it as `contract.version`. A client built against version X works with an adapter answering Y when Y is in the caret range of X: the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range every change is additive: a route, a key, a feature id, an enum value, an error code, an event. Removing or renaming any of those, or changing what one means, is breaking and opens a new range (MINOR before 1.0, MAJOR after). A client that meets an adapter outside its range says so and draws nothing from it.\n\n## What a client does not know\n\nConsumers ignore keys, feature ids and events they do not know. An enum value a client does not know means the least that field can mean: treat it as the first value listed. An error code it does not know goes to its default branch.\n\n## Capabilities\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. The declaration is network-wide; a room where it differs carries `features` of its own, which narrow the declaration and never add to it. Names under `x-<provider>.` (feature ids, events and object keys) are provider extensions.\n\n## Routes\n\nReads are `GET` on a noun, writes are `POST` on a verb. Every operation but `/health` and `/capabilities` names the one feature that gates it in `x-feature`. Every documented route is routed by every adapter; a route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`, and an adapter declares a feature exactly when it performs it end to end. A feature marked `x-reserved` has a name but no route yet: no adapter can declare it, and its parameters may still change, until a version defines its route.\n\n## Writes\n\nA write answered with any error code but `INTERNAL` changed nothing. `INTERNAL`, a timeout or a dropped connection leaves the outcome unknown: the adapter never retries it, and a client says so rather than repeating it on its own.\n\n## Ids, times and text\n\nIds are opaque non-empty strings: compare, store and send them back as they are, never as numbers. Times are RFC 3339 `date-time`. Text lengths are counted in Unicode code points.\n\n## Security posture\n\nA shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header. Message content, names and files are someone else's words: a client draws them as text, never as markup.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -39,7 +39,7 @@
       "get": {
         "operationId": "capabilities",
         "summary": "What this adapter can do, and the limits its messenger enforces.",
-        "description": "Like an AI API listing its models and what each supports. `revision` changes whenever anything else in the answer does, so a client can tell a held answer is stale. Today the features are network-wide; a room whose features differ will say so on the room itself once rooms are in this contract.",
+        "description": "Like an AI API listing its models and what each supports. A client checks `contract.version` against its own range before anything else. `revision` changes whenever anything else in the answer does, so a client can tell a held answer is stale. The declaration is network-wide; a room where it differs says so in `Room.features`.",
         "responses": {
           "200": {
             "description": "The declaration.",
@@ -52,14 +52,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHORIZED`: missing or wrong bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -67,8 +60,9 @@
     "/rooms": {
       "get": {
         "operationId": "rooms",
+        "x-feature": "rooms.list",
         "summary": "The conversations the account can see, as its own client lists them.",
-        "description": "Feature `rooms.list`. Rooms come in the order the messenger's own client shows them (pinned first, then by latest activity). An adapter may stop at a cap of its own; `complete: false` says it did and that more rooms exist.",
+        "description": "Feature `rooms.list`. Rooms come in the order the messenger's own client shows them (pinned first, then by latest activity). An adapter may stop at a cap of its own; `complete: false` says it did and that more rooms exist. A room whose features differ from the declaration carries `features`.",
         "responses": {
           "200": {
             "description": "The rooms.",
@@ -81,44 +75,19 @@
             }
           },
           "401": {
-            "description": "`UNAUTHORIZED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
-            "description": "`RATE_LIMITED`: the messenger asked the adapter to slow down; nothing changed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
-            "description": "`INTERNAL`: the adapter failed; the message says nothing about the account.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Internal"
           },
           "501": {
-            "description": "`NOT_SUPPORTED`: this adapter does not declare `rooms.list`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
           }
         }
       }
@@ -126,8 +95,9 @@
     "/messages": {
       "get": {
         "operationId": "messages",
+        "x-feature": "messages.read",
         "summary": "A room's messages, oldest first.",
-        "description": "Feature `messages.read`. Without `before`, the newest `limit` messages; with it, the `limit` messages just before that id. `hasEarlier` says whether older ones exist. `before` paging is answered only when the feature declares `paging: before-id`.",
+        "description": "Feature `messages.read`. Without `before`, the newest `limit` messages; with it, the `limit` messages just before that id. `hasEarlier` says whether older ones exist. `before` paging is answered only when the feature declares `paging: before-id`; a `limit` above the feature's `maxLimit` is `400 INVALID_REQUEST`.",
         "parameters": [
           {
             "name": "roomId",
@@ -172,64 +142,117 @@
             }
           },
           "400": {
-            "description": "`INVALID_REQUEST`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InvalidRequest"
           },
           "401": {
-            "description": "`UNAUTHORIZED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
-            "description": "`NOT_FOUND`: no such room.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
-            "description": "`RATE_LIMITED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
-            "description": "`INTERNAL`.",
-            "content": {
-              "application/json": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
+          }
+        }
+      }
+    },
+    "/media": {
+      "get": {
+        "operationId": "media",
+        "x-feature": "attachments.read",
+        "summary": "The bytes of a file a message carries.",
+        "description": "Feature `attachments.read`. `id` is the `id` of an entry in a message's `attachments`. The bytes are someone else's, so the answer is made safe to open at the client's own origin: `content-security-policy: default-src 'none'; sandbox` and `x-content-type-options: nosniff` always; the attachment's own type, served `inline`, only when it is one a browser draws or plays without running anything (JPEG, PNG, GIF, WebP and AVIF images; MP4, WebM and Ogg video; MPEG, Ogg, MP4, AAC, WebM, WAV and FLAC audio); anything else as `application/octet-stream` and `attachment`. An id answers the same bytes for as long as it answers at all (a message whose file is replaced carries a new id), so the answer may be kept in a private cache.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file, streamed.",
+            "headers": {
+              "Content-Type": {
+                "description": "The attachment's type when it is on the inline list above; otherwise `application/octet-stream`.",
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "`inline` or `attachment`, with the name, when there is one, in `filename*` (UTF-8, percent-encoded) beside a printable-ASCII `filename`. Somebody else chose the name: it is only ever a download name.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Security-Policy": {
+                "description": "`default-src 'none'; sandbox`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "`nosniff`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "`private, max-age=86400`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
           "501": {
-            "description": "`NOT_SUPPORTED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
           }
         }
       }
@@ -237,8 +260,9 @@
     "/stream": {
       "get": {
         "operationId": "stream",
+        "x-feature": "messages.stream",
         "summary": "New messages as Server-Sent Events.",
-        "description": "Feature `messages.stream`. The same shape the KakaoTalk cores use: `ready` once, then `message` per message with a `cursor` after the messages it covers, `ping` while quiet, and `error` once before the stream ends. With `resume: cursor`, a reconnection hands back the last cursor as repeated `since=<roomId>:<messageId>` (split at the last colon) and the adapter sends what each named room received after that id before going live; a room not named starts from now. A cursor the adapter cannot honour is refused, never downgraded to now.",
+        "description": "Feature `messages.stream`. The same shape the KakaoTalk cores use: `ready` once, then `message` per message with a `cursor` after the messages it covers, `ping` while quiet, and `error` once before the stream ends. With `resume: cursor`, a reconnection hands back the last cursor as repeated `since=<roomId>:<messageId>` (split at the last colon) and the adapter sends what each named room received after that id before going live; a room not named starts from now. A cursor the adapter cannot honour is refused, never downgraded to now. An `error` event carries any code a read can answer. A client skips an event this version does not list; names in use or reserved for later versions are in tsuba's `docs/contract.md`.",
         "parameters": [
           {
             "name": "since",
@@ -266,34 +290,13 @@
             }
           },
           "400": {
-            "description": "`INVALID_REQUEST`: a malformed `since`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InvalidRequest"
           },
           "401": {
-            "description": "`UNAUTHORIZED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Unauthorized"
           },
           "501": {
-            "description": "`NOT_SUPPORTED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotSupported"
           },
           "503": {
             "description": "`BUSY`: the adapter already holds as many streams as it will (8).",
@@ -338,8 +341,9 @@
     "/send": {
       "post": {
         "operationId": "send",
+        "x-feature": "messages.send",
         "summary": "Send text to a room.",
-        "description": "Feature `messages.send`. Sends are one at a time per adapter; at most four wait, and a fifth is `429 RATE_LIMITED` having changed nothing. With `receipt: stored` the answer carries the message the messenger stored. A send whose outcome is uncertain is never retried by the adapter.",
+        "description": "Feature `messages.send`. Sends are one at a time per adapter; at most four wait, and a fifth is `429 RATE_LIMITED` having changed nothing. Text that is empty or longer than the feature's `maxLength` code points is `400 INVALID_REQUEST`. With `receipt: stored` the answer carries the message the messenger stored. Every error but `INTERNAL` means nothing was sent; a send whose outcome is uncertain is never retried by the adapter.",
         "requestBody": {
           "required": true,
           "content": {
@@ -362,64 +366,28 @@
             }
           },
           "400": {
-            "description": "`INVALID_REQUEST`: empty, or longer than `maxLength` code points.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InvalidRequest"
           },
           "401": {
-            "description": "`UNAUTHORIZED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
-            "description": "`NOT_FOUND`: no such room.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotFound"
           },
           "429": {
-            "description": "`RATE_LIMITED`: the line is full or the messenger asked to slow down.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
-            "description": "`INTERNAL`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/Internal"
           },
           "501": {
-            "description": "`NOT_SUPPORTED`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
           }
         }
       }
@@ -432,6 +400,88 @@
         "scheme": "bearer"
       }
     },
+    "responses": {
+      "InvalidRequest": {
+        "description": "`INVALID_REQUEST`: malformed, or outside a declared limit; nothing changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "`UNAUTHORIZED`: missing or wrong bearer token.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "`FORBIDDEN`: the messenger does not let this account do this here; nothing changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "`NOT_FOUND`: no such room, message or attachment for this account.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "`RATE_LIMITED`: the adapter's line is full or the messenger asked it to slow down; nothing changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Internal": {
+        "description": "`INTERNAL`: the adapter failed; the message says nothing about the account. On a write, the outcome is unknown.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "NotSupported": {
+        "description": "`NOT_SUPPORTED`: this adapter does not declare the route's feature.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "ReauthRequired": {
+        "description": "`REAUTH_REQUIRED`: the messenger no longer accepts the adapter's session; nothing changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
     "schemas": {
       "PositiveInteger": {
         "type": "integer",
@@ -439,7 +489,7 @@
       },
       "ErrorCode": {
         "type": "string",
-        "description": "Known codes. The set grows: keep a default branch.",
+        "description": "Known codes, each with its one HTTP status. The set grows: keep a default branch.\n\n- `UNAUTHORIZED` 401: the bearer token is missing or wrong.\n- `INVALID_REQUEST` 400: the request is malformed or outside a declared limit.\n- `NOT_FOUND` 404: no such route, room, message or attachment for this account.\n- `METHOD_NOT_ALLOWED` 405: the route answers another method, named in `Allow`.\n- `NOT_SUPPORTED` 501: the adapter does not declare the route's feature.\n- `RATE_LIMITED` 429: the adapter's line is full or the messenger asked it to slow down.\n- `BUSY` 503: the adapter holds as many streams as it will.\n- `INTERNAL` 500: the adapter failed; the message says nothing about the account. On a write, the outcome is unknown.\n- `FORBIDDEN` 403: the messenger does not let this account do this here (a channel it cannot post in, a group that restricted or banned it).\n- `REAUTH_REQUIRED` 503: the messenger no longer accepts the adapter's session (signed out, revoked or expired); a person signs in again where the adapter runs.",
         "enum": [
           "UNAUTHORIZED",
           "INVALID_REQUEST",
@@ -448,7 +498,9 @@
           "NOT_SUPPORTED",
           "RATE_LIMITED",
           "BUSY",
-          "INTERNAL"
+          "INTERNAL",
+          "FORBIDDEN",
+          "REAUTH_REQUIRED"
         ]
       },
       "ErrorEnvelope": {
@@ -512,7 +564,7 @@
             "properties": {
               "version": {
                 "type": "string",
-                "description": "The `info.version` of this document the adapter answers."
+                "description": "The `info.version` of this document the adapter answers. A client checks it against its own caret range before anything else."
               }
             }
           },
@@ -579,152 +631,361 @@
       },
       "Features": {
         "type": "object",
-        "description": "Supported features by id. Absent means unsupported. Ids under `x-<provider>.` are provider extensions; ignore any id you do not know.",
+        "description": "Supported features by id, each with the limits its messenger enforces. Absent means unsupported. Ids under `x-<provider>.` are provider extensions; ignore any id you do not know.",
         "properties": {
           "rooms.list": {
-            "type": "object",
-            "description": "List the conversations the account can see."
+            "$ref": "#/components/schemas/FeatureRoomsList"
           },
           "messages.read": {
-            "type": "object",
-            "required": [
-              "paging",
-              "maxLimit"
-            ],
-            "description": "Read a room's messages, oldest first.",
-            "properties": {
-              "paging": {
-                "type": "string",
-                "enum": [
-                  "none",
-                  "before-id"
-                ],
-                "description": "`none`: only the newest window. `before-id`: earlier pages before a message id."
-              },
-              "maxLimit": {
-                "$ref": "#/components/schemas/PositiveInteger",
-                "description": "Most messages one read returns."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureMessagesRead"
           },
           "messages.stream": {
-            "type": "object",
-            "required": [
-              "resume"
-            ],
-            "description": "Receive new messages over SSE.",
-            "properties": {
-              "resume": {
-                "type": "string",
-                "enum": [
-                  "none",
-                  "cursor"
-                ],
-                "description": "`none`: a reconnection starts from now. `cursor`: a reconnection resumes from per-room cursors without a gap."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureMessagesStream"
           },
           "messages.send": {
-            "type": "object",
-            "required": [
-              "maxLength",
-              "receipt"
-            ],
-            "description": "Send text.",
-            "properties": {
-              "maxLength": {
-                "$ref": "#/components/schemas/PositiveInteger",
-                "description": "Longest text the messenger accepts, in Unicode code points."
-              },
-              "receipt": {
-                "type": "string",
-                "enum": [
-                  "accepted",
-                  "stored"
-                ],
-                "description": "`accepted`: the messenger took the request, nothing more is known. `stored`: the answer carries the id of the message the messenger stored."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureMessagesSend"
           },
           "messages.reply": {
-            "type": "object",
-            "description": "Send a message as a reply to another."
+            "$ref": "#/components/schemas/FeatureMessagesReply"
           },
           "messages.edit": {
-            "type": "object",
-            "description": "Edit a message the account sent.",
-            "properties": {
-              "maxAgeSeconds": {
-                "$ref": "#/components/schemas/PositiveInteger",
-                "description": "Absent when the messenger sets no age limit."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureMessagesEdit"
           },
           "messages.delete": {
-            "type": "object",
-            "required": [
-              "forEveryone"
-            ],
-            "description": "Delete a message.",
-            "properties": {
-              "forEveryone": {
-                "type": "boolean",
-                "description": "Whether deletion removes it for every participant rather than only this account."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureMessagesDelete"
           },
           "reactions.read": {
-            "type": "object",
-            "description": "Messages carry their reactions."
+            "$ref": "#/components/schemas/FeatureReactionsRead"
           },
           "reactions.send": {
-            "type": "object",
-            "description": "Add or remove a reaction.",
-            "properties": {
-              "maxPerMessage": {
-                "$ref": "#/components/schemas/PositiveInteger",
-                "description": "Absent when the messenger sets no limit."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureReactionsSend"
           },
           "read.mark": {
-            "type": "object",
-            "description": "Mark a room read up to a message, as the messenger's own client would."
+            "$ref": "#/components/schemas/FeatureReadMark"
           },
           "typing.send": {
-            "type": "object",
-            "description": "Show that the account is typing."
+            "$ref": "#/components/schemas/FeatureTypingSend"
           },
           "threads.read": {
-            "type": "object",
-            "description": "Read a thread under a message. A thread is not a room; a room is the conversation."
+            "$ref": "#/components/schemas/FeatureThreadsRead"
           },
           "attachments.read": {
-            "type": "object",
-            "description": "Download the files messages carry."
+            "$ref": "#/components/schemas/FeatureAttachmentsRead"
           },
           "attachments.send": {
-            "type": "object",
-            "required": [
-              "maxBytes",
-              "caption"
-            ],
-            "description": "Send a file.",
-            "properties": {
-              "maxBytes": {
-                "$ref": "#/components/schemas/PositiveInteger",
-                "description": "Largest file the messenger accepts from this account."
-              },
-              "caption": {
-                "type": "boolean",
-                "description": "Whether a file can carry text with it."
-              }
-            }
+            "$ref": "#/components/schemas/FeatureAttachmentsSend"
           }
         },
         "patternProperties": {
           "^x-[a-z][a-z0-9-]*\\.": {
             "type": "object"
+          }
+        }
+      },
+      "FeatureRoomsList": {
+        "type": "object",
+        "description": "List the conversations the account can see: `GET /rooms`."
+      },
+      "FeatureMessagesRead": {
+        "type": "object",
+        "description": "Read a room's messages, oldest first: `GET /messages`.",
+        "required": [
+          "paging",
+          "maxLimit"
+        ],
+        "properties": {
+          "paging": {
+            "type": "string",
+            "enum": [
+              "none",
+              "before-id"
+            ],
+            "description": "`none`: only the newest window. `before-id`: earlier pages before a message id."
+          },
+          "maxLimit": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Most messages one read returns."
+          }
+        }
+      },
+      "FeatureMessagesStream": {
+        "type": "object",
+        "description": "Receive new messages over SSE: `GET /stream`.",
+        "required": [
+          "resume"
+        ],
+        "properties": {
+          "resume": {
+            "type": "string",
+            "enum": [
+              "none",
+              "cursor"
+            ],
+            "description": "`none`: a reconnection starts from now. `cursor`: a reconnection resumes from per-room cursors without a gap."
+          }
+        }
+      },
+      "FeatureMessagesSend": {
+        "type": "object",
+        "description": "Send text: `POST /send`.",
+        "required": [
+          "maxLength",
+          "receipt"
+        ],
+        "properties": {
+          "maxLength": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Longest text the messenger accepts, in Unicode code points."
+          },
+          "receipt": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "stored"
+            ],
+            "description": "`accepted`: the messenger took the request, nothing more is known. `stored`: the answer carries the id of the message the messenger stored."
+          }
+        }
+      },
+      "FeatureMessagesReply": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Send a message as a reply to another: `replyTo` on `POST /send`."
+      },
+      "FeatureMessagesEdit": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Edit a message the account sent: `POST /edit`.",
+        "properties": {
+          "maxAgeSeconds": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Absent when the messenger sets no age limit."
+          }
+        }
+      },
+      "FeatureMessagesDelete": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Delete a message: `POST /delete`.",
+        "required": [
+          "forEveryone"
+        ],
+        "properties": {
+          "forEveryone": {
+            "type": "boolean",
+            "description": "Whether deletion removes it for every participant rather than only this account."
+          }
+        }
+      },
+      "FeatureReactionsRead": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Messages carry their reactions: `Message.reactions`."
+      },
+      "FeatureReactionsSend": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Add or remove a reaction: `POST /react`.",
+        "properties": {
+          "maxPerMessage": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Absent when the messenger sets no limit."
+          }
+        }
+      },
+      "FeatureReadMark": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Mark a room read up to a message, as the messenger's own client would: `POST /read`."
+      },
+      "FeatureTypingSend": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Show that the account is typing: `POST /typing`."
+      },
+      "FeatureThreadsRead": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Read a thread under a message: `GET /thread`. A thread is not a room; a room is the conversation."
+      },
+      "FeatureAttachmentsRead": {
+        "type": "object",
+        "description": "Messages carry `attachments`, and `GET /media` answers their bytes."
+      },
+      "FeatureAttachmentsSend": {
+        "type": "object",
+        "x-reserved": true,
+        "description": "Reserved. Send a file: `POST /upload`.",
+        "required": [
+          "maxBytes",
+          "caption"
+        ],
+        "properties": {
+          "maxBytes": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Largest file the messenger accepts from this account."
+          },
+          "caption": {
+            "type": "boolean",
+            "description": "Whether a file can carry text with it."
+          }
+        }
+      },
+      "RoomFeatures": {
+        "type": "object",
+        "description": "A room's own features where they differ from the declaration. A key replaces the declared value of that feature for this room, and `false` means the feature is unsupported here; an absent key leaves the declaration as it is. Only declared features appear: a room narrows the declaration and never adds to it.",
+        "properties": {
+          "rooms.list": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureRoomsList"
+              }
+            ]
+          },
+          "messages.read": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesRead"
+              }
+            ]
+          },
+          "messages.stream": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesStream"
+              }
+            ]
+          },
+          "messages.send": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesSend"
+              }
+            ]
+          },
+          "messages.reply": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesReply"
+              }
+            ]
+          },
+          "messages.edit": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesEdit"
+              }
+            ]
+          },
+          "messages.delete": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureMessagesDelete"
+              }
+            ]
+          },
+          "reactions.read": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureReactionsRead"
+              }
+            ]
+          },
+          "reactions.send": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureReactionsSend"
+              }
+            ]
+          },
+          "read.mark": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureReadMark"
+              }
+            ]
+          },
+          "typing.send": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureTypingSend"
+              }
+            ]
+          },
+          "threads.read": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureThreadsRead"
+              }
+            ]
+          },
+          "attachments.read": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureAttachmentsRead"
+              }
+            ]
+          },
+          "attachments.send": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "$ref": "#/components/schemas/FeatureAttachmentsSend"
+              }
+            ]
+          }
+        },
+        "patternProperties": {
+          "^x-[a-z][a-z0-9-]*\\.": {
+            "anyOf": [
+              {
+                "const": false
+              },
+              {
+                "type": "object"
+              }
+            ]
           }
         }
       },
@@ -782,6 +1043,9 @@
                 "type": "boolean"
               }
             }
+          },
+          "features": {
+            "$ref": "#/components/schemas/RoomFeatures"
           }
         }
       },
@@ -805,6 +1069,60 @@
           "complete": {
             "type": "boolean",
             "description": "`false` when the adapter stopped at its own cap and more rooms exist."
+          }
+        }
+      },
+      "Attachment": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind"
+        ],
+        "description": "A file a message carries. A key that does not apply, or that the messenger does not say, is absent.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Opaque; `GET /media?id=` answers its bytes."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "image",
+              "video",
+              "audio",
+              "voice",
+              "sticker",
+              "animation"
+            ],
+            "description": "`file`: something to download. `image`: a still picture. `video`. `audio`: music or a recording. `voice`: a voice note. `sticker`. `animation`: a looping silent clip, such as a GIF."
+          },
+          "name": {
+            "type": "string",
+            "description": "The file name it was sent with. Somebody else chose it: show it, never use it as a path."
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "As the messenger reports it. `GET /media` serves a type by its own rule, not by this."
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "In bytes."
+          },
+          "width": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "In pixels."
+          },
+          "height": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "In pixels."
+          },
+          "durationSeconds": {
+            "type": "number",
+            "minimum": 0
           }
         }
       },
@@ -849,7 +1167,7 @@
               "media",
               "service"
             ],
-            "description": "`media`: a photo, file, sticker, voice and so on, with `text` its caption. `service`: a join, a title change and the like."
+            "description": "`media`: a photo, file, sticker, voice and so on, with `text` its caption; its files are in `attachments` when the adapter declares `attachments.read`. A link preview is not media. `service`: a join, a title change and the like."
           },
           "sentAt": {
             "type": "string",
@@ -866,6 +1184,14 @@
             "type": "string",
             "minLength": 1,
             "description": "The id of the message this replies to."
+          },
+          "attachments": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            },
+            "description": "The files the message carries, in the order the messenger shows them. Present only when the adapter declares `attachments.read` and the message carries a file it can describe."
           }
         }
       },

@@ -118,7 +118,7 @@ async function measureLength(tg: TelegramClient) {
   }
 }
 
-// Declare only the four features implemented end to end.
+// Declare only the features implemented end to end.
 const CAPABILITIES: Capabilities = {
   provider: { id: "telegram", name: "Telegram" },
   account: { kind: "user" },
@@ -129,6 +129,7 @@ const CAPABILITIES: Capabilities = {
     "messages.stream": { resume: "cursor" },
     // Measured on the user path: 4096 Unicode code points, not UTF-16 units.
     "messages.send": { maxLength: 4096, receipt: "stored" },
+    "attachments.read": {},
   },
 };
 

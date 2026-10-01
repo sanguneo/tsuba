@@ -1,3 +1,4 @@
+import type { RoomFeatures } from "./capabilities";
 import type { ErrorCode } from "./envelope";
 
 export interface Room {
@@ -7,6 +8,25 @@ export interface Room {
   unread: number;
   lastActivityAt?: string;
   lastMessage?: { text: string; fromMe: boolean };
+  features?: RoomFeatures;
+}
+
+export interface Attachment {
+  id: string;
+  kind:
+    | "file"
+    | "image"
+    | "video"
+    | "audio"
+    | "voice"
+    | "sticker"
+    | "animation";
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  durationSeconds?: number;
 }
 
 export interface Message {
@@ -20,6 +40,7 @@ export interface Message {
   editedAt?: string;
   fromMe: boolean;
   replyTo?: string;
+  attachments?: Attachment[];
 }
 
 export interface RoomsAnswer {
@@ -62,6 +83,13 @@ export interface ErrorEnvelope {
   error: { code: ErrorCode; message: string };
 }
 
+/** A file's bytes as the messenger hands them over; `GET /media` decides the headers. */
+export interface MediaFile {
+  body: ReadableStream<Uint8Array>;
+  mimeType?: string;
+  name?: string;
+}
+
 export interface ReadMessagesRequest {
   roomId: string;
   limit: number;
@@ -77,6 +105,7 @@ export interface AdapterBackend {
   messagesAfter?(roomId: string, afterId: string): Promise<Message[]>;
   subscribe?(listener: (message: Message) => void): () => void;
   send?(roomId: string, text: string): Promise<Message>;
+  media?(id: string, signal: AbortSignal): Promise<MediaFile>;
 }
 
 /** Only deliberately safe, account-free messages belong in this error. */
