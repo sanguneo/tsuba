@@ -621,6 +621,29 @@ test("quiet stream pings using injectable interval", async () => {
   }
 });
 
+test("a quiet stream outlives the server's idle limit and gets its ping", async () => {
+  const live = liveBackend();
+  const server = serve({
+    token: TOKEN,
+    capabilities: full,
+    backend: live.backend,
+    port: 0,
+    // Bun's idle timer ticks every 4 s, so idleTimeout 1 closes an idle
+    // connection at about 4 s; the ping comes after that.
+    idleTimeout: 1,
+    pingIntervalMs: 6_000,
+  });
+  try {
+    const sse = events(
+      await fetch(new URL("/stream", server.url), { headers: bearer }),
+    );
+    await sse.next("ready");
+    await sse.next("ping");
+  } finally {
+    await server.stop(true);
+  }
+}, 15_000);
+
 test("live updates during resume are buffered and overlapping history is deduplicated", async () => {
   const live = liveBackend();
   const entered = deferred<void>();

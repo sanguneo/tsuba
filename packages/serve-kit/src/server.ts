@@ -354,13 +354,27 @@ export function createHandler(options: AdapterOptions) {
 }
 
 export function serve(
-  options: AdapterOptions & { port: number; hostname?: string },
+  options: AdapterOptions & {
+    port: number;
+    hostname?: string;
+    /** Bun's idle limit for ordinary requests, in seconds (Bun's default is 10). */
+    idleTimeout?: number;
+  },
 ) {
   const handler = createHandler(options);
   const server = Bun.serve({
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port,
-    fetch: handler.handle,
+    ...(options.idleTimeout === undefined
+      ? {}
+      : { idleTimeout: options.idleTimeout }),
+    fetch(request, server) {
+      // A quiet stream is idle between pings; Bun would close it at its idle
+      // limit, ending the stream without the contract's `error` event.
+      if (new URL(request.url).pathname === "/stream")
+        server.timeout(request, 0);
+      return handler.handle(request);
+    },
   });
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
