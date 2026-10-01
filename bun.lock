@@ -19,6 +19,14 @@
         "discord.js": "14.27.0",
       },
     },
+    "adapters/slack": {
+      "name": "@tsuba/slack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tsuba/serve-kit": "workspace:*",
+        "emoji-datasource": "16.0.0",
+      },
+    },
     "adapters/telegram": {
       "name": "@tsuba/telegram",
       "version": "0.0.0",
@@ -95,6 +103,8 @@
 
     "@tsuba/serve-kit": ["@tsuba/serve-kit@workspace:packages/serve-kit"],
 
+    "@tsuba/slack": ["@tsuba/slack@workspace:adapters/slack"],
+
     "@tsuba/telegram": ["@tsuba/telegram@workspace:adapters/telegram"],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
@@ -122,6 +132,8 @@
     "domhandler": ["domhandler@5.0.3", "", { "dependencies": { "domelementtype": "^2.3.0" } }, "sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w=="],
 
     "domutils": ["domutils@3.2.2", "", { "dependencies": { "dom-serializer": "^2.0.0", "domelementtype": "^2.3.0", "domhandler": "^5.0.3" } }, "sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw=="],
+
+    "emoji-datasource": ["emoji-datasource@16.0.0", "", {}, "sha512-/qHKqK5Nr3+8zhgO6kHmF43Fm5C8HNn0AaFRIpgw8HF3+uF0Vfc8jgLI1ZQS5ba1vBzksS8NBCjHejwLb2D/Sg=="],
 
     "entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
 

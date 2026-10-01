@@ -1,0 +1,10 @@
+{
+  "name": "@tsuba/slack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tsuba/serve-kit": "workspace:*",
+    "emoji-datasource": "16.0.0"
+  }
+}

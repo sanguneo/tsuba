@@ -27,7 +27,7 @@ bun run test
 | `contract/openapi.json` | The adapter contract. Consumers copy it byte for byte |
 | `contract/CHANGELOG.md` | Every contract version and why it changed |
 | `packages/serve-kit/` | What every adapter shares: envelope, auth, routing, capabilities, `/media` headers |
-| `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram` as the user, `discord` as a bot) |
+| `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram` and `slack` as the user, `discord` as a bot) |
 | `docs/contract.md` | The contract's rules in one place, and every name in use or reserved |
 | `docs/` | Also the per-adapter notes, deployment and the reference review |
 | `tests/` | `bun test` suites; `tests/harness/` holds the no-sleep helpers |

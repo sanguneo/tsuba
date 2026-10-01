@@ -19,6 +19,9 @@ tsuba 를 시작하기 전에(2026-10-01) 검토한 것들입니다. 외부 저�
 
 | 프로젝트 | 상태 | 가져올 것 | 가져오지 않을 것 |
 | --- | --- | --- | --- |
+| [Slack Web API·Socket Mode](https://docs.slack.dev) (공식 문서) | 2026-10-01 확인 | **Slack 어댑터의 기준.** 사용자 토큰 범위, `conversations.mark`, 사용자 대신 받는 이벤트, Socket Mode 봉투·ack, 2025년 기록 읽기 제한이 내부 앱에는 없다는 점 | `@slack/web-api`·`@slack/socket-mode` 는 쓰지 않음 — HTTPS 폼과 WebSocket 하나라 Bun 내장으로 충분 |
+| [emoji-datasource](https://github.com/iamcal/emoji-data) (MIT) | 16.0.0 | Slack 이 쓰는 이모지 이름표 — 반응 이름 ↔ 유니코드 | 이미지 시트 |
+| [mautrix-slack](https://github.com/mautrix/slack) (Go, AGPL) | 활발 | mrkdwn 변환·스레드 처리의 참고 | 브라우저 세션 토큰(`xoxc-`)과 쿠키로 접속 — tsuba 는 공식 사용자 토큰만 |
 | [discord.js](https://github.com/discordjs/discord.js) (TS, Apache-2.0) | 활발, 14.27.0 (2026-10-01 확인) | **Discord 어댑터의 기반.** 게이트웨이 재연결·재개, REST 요청 한도, 채널·역할 권한 계산(`permissionsFor`), Bun 공식 안내 있음 | 기본 REST 재시도(결과 모르는 쓰기를 다시 보냄) → `rest.retries: 0` |
 | [mautrix-discord](https://github.com/mautrix/discord) (Go, AGPL) | 활발 | 방·메시지·반응 대응 관계의 참고 | 사람 계정 토큰으로 접속하는 퍼펫팅 — tsuba 의 Discord 는 봇 계정만 |
 | [mtcute](https://github.com/mtcute/mtcute) (TS, MIT) | 활발, `@mtcute/bun` 0.32.3 (2026-09-25) | **Telegram 어댑터의 기반.** 공식 Bun 패키지(`bun:sqlite`), `getDifference`/`getChannelDifference` 로 업데이트 공백 메우기(`updates.catchUp`), 전화번호·코드·2FA·QR 로그인 | 메시지 기록 DB 는 없음 → tsuba 가 자기 정규화 저장소와 방별 재동기화를 가져야 함 |
