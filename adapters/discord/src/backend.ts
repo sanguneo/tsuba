@@ -424,14 +424,53 @@ export function discordBackend(client: Client<true>): AdapterBackend {
           reaction.emoji.name ? [reaction.emoji.name] : [],
         );
       const plan = reactionPlan(mine, emojis);
-      for (const emoji of plan.remove)
-        await discord(async () => {
+      const permissions = channel.permissionsFor(bot);
+      if (
+        plan.add.length &&
+        !permissions?.has(PermissionFlagsBits.AddReactions)
+      )
+        throw new AdapterError(
+          "FORBIDDEN",
+          "This bot cannot add reactions in this channel",
+        );
+      const retained = held.reactions.cache.filter(
+        (reaction) =>
+          !(
+            reaction.me &&
+            !reaction.emoji.id &&
+            reaction.emoji.name &&
+            plan.remove.includes(reaction.emoji.name)
+          ),
+      );
+      const newDistinct = plan.add.filter(
+        (emoji) =>
+          !retained.some(
+            (reaction) => !reaction.emoji.id && reaction.emoji.name === emoji,
+          ),
+      );
+      if (retained.size + newDistinct.length > 20)
+        throw new AdapterError(
+          "FORBIDDEN",
+          "Discord already has the maximum number of reaction kinds on this message",
+        );
+      let changed = false;
+      try {
+        for (const emoji of plan.remove) {
           await held.reactions.cache.get(emoji)?.users.remove(bot.id);
-        });
-      for (const emoji of plan.add)
-        await discord(async () => {
+          changed = true;
+        }
+        for (const emoji of plan.add) {
           await held.react(emoji);
-        });
+          changed = true;
+        }
+      } catch (error) {
+        if (changed)
+          throw new AdapterError(
+            "INTERNAL",
+            "Discord's reaction update stopped after a partial change; its outcome is unknown",
+          );
+        throw apiError(error);
+      }
       return reactionsOf(await message(channel, messageId));
     },
 

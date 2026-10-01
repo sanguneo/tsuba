@@ -34,3 +34,14 @@ tsuba 를 시작하기 전에(2026-10-01) 검토한 것들입니다. 외부 저�
 - **MCP `initialize`**: 계약(프로토콜) 버전과 구현(어댑터) 버전을 분리하고, 선택 기능은 선언된 경우에만 쓰며, 실험·확장용 이름공간을 둔다 → tsuba 는 `x-<provider>.` 접두어.
 - **mautrix**: 기능 집합에 revision(내용 해시)을 붙여 바뀐 것을 알 수 있게 하고, 방마다 기능이 다를 수 있음을 처음부터 계약에 적는다.
 - **OpenAI `GET /v1/models`**: 모델 목록일 뿐 기능 목록이 아니다. 이름으로 기능을 추측하지 말라는 교훈만 가져옴.
+
+## Discord adapter
+
+| Reference | State checked 2026-10-01 | Reuse | Do not copy |
+| --- | --- | --- | --- |
+| [discord.js](https://github.com/discordjs/discord.js) 14.27.0 (TypeScript, Apache-2.0) | Latest release 2026-07-15; repository active (commit 2026-10-01); Node >=18; Bun import smoke-tested on Bun 1.4.2 | Gateway reconnect/resume, REST rate-limit bucket handling, permission calculation via `permissionsFor`, official TypeScript API types. Adapter uses Guilds, GuildMessages, GuildMessageReactions and MessageContent intents. | Do not enable intents the adapter does not use; set REST retries to zero so ambiguous writes are not resent. |
+| [Discord ChannelType](https://discord.js.org/docs/packages/discord.js/14.27.0/ChannelType:Enum) | Version-pinned API docs | `GuildText` is type 0; `GuildAnnouncement` 5 and `GuildForum` 15 are distinct channel kinds. The adapter includes type 0 only. | Do not treat every text-based or guild channel as an ordinary conversation room. |
+| [Discord Message Content Intent policy](https://support-dev.discord.com/hc/en-us/articles/5324827539479-Message-Content-Intent-Review-Policy) | Official policy page | Explain that content, embeds, attachments, components and polls require the privileged intent. | Do not request GuildMembers or Presence intents; neither is needed here. |
+| [Matterbridge Discord source](https://github.com/42wim/matterbridge/tree/master/bridge/discord) | Go, Apache-2.0; Discord adapter file last changed 2024-05-23 | A long-lived Discord bridge is useful as a mapping reference. | It is a multi-platform bridge, not a TypeScript/Bun adapter; copy no code. |
+
+Discord-specific scope: the bot lists ordinary guild text channels it can both view and read. It cannot enumerate group DMs, and this adapter does not treat announcement, forum, media, thread, voice or stage channels as rooms. Message Content Intent is enabled by the operator in Discord's developer portal; the bot's channel permissions are checked per room.

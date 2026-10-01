@@ -48,16 +48,18 @@ Discord 의 서버(길드)에는 채널이 여럿 있습니다. 그중 **일반 
 | `rooms.list` | `{}` | 위 "무엇이 방인가" |
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | `GET /channels/{id}/messages` (Discord 의 한 번 상한 100) |
 | `messages.stream` | `resume: cursor`, `events: [message.edited, message.deleted, reactions.updated]` | 게이트웨이 이벤트, 이어 읽기는 `after` 로 페이지 단위 |
-| `messages.send` | `maxLength: 2000`, `receipt: stored` | 문서상 한계 2000자. **단위(코드 포인트/UTF-16)는 아직 측정하지 않음** — 넘으면 Discord 가 400 으로 거절하고 아무것도 보내지지 않습니다 |
+| `messages.send` | `maxLength: 1000`, `receipt: stored` | Discord 의 2000 UTF-16 단위 한도에 astral 문자가 들어가도 넘지 않도록 코드 포인트 기준으로 절반을 신고하는 보수적 상한 |
 | `messages.reply` | `{}` | `message_reference`, 원문이 없으면 실패(`failIfNotExists`) |
-| `messages.edit` | `maxLength: 2000` | 봇 자신의 메시지만. Discord 는 수정 시간 제한이 없음 |
-| `messages.delete` | `forEveryone: true` | 봇 자신의 메시지, 또는 메시지 관리 권한이 있으면 남의 메시지 |
+| `messages.edit` | `maxLength: 1000` | 봇 자신의 메시지만. Discord 는 수정 시간 제한이 없음 |
+| `messages.delete` | `forEveryone: true` | 봇 자신의 메시지만. 남의 메시지 삭제는 아직 신고하지 않음 |
 | `reactions.read` | `{}` | 유니코드 이모지 반응만(서버 커스텀 이모지는 뺌) |
-| `reactions.send` | `{}` | 지금 내 반응과 원하는 목록의 차이만큼 빼고 더함. Discord 는 사람당 개수 제한이 없음(메시지당 종류 20개 제한은 `403 FORBIDDEN`) |
+| `reactions.send` | `maxPerMessage: 20` | 지금 내 반응과 원하는 목록의 차이만큼 빼고 더함. 메시지 전체 반응 종류가 20개를 넘을 요청은 변경 전에 거절. 여러 REST 변경 중 예상 밖 오류가 나면 일부가 적용됐을 수 있으므로 `INTERNAL` (결과 불명) |
 | `attachments.read` | `{}` | 메시지를 다시 읽어 서명된 CDN 주소를 새로 받고, `cdn.discordapp.com`·`media.discordapp.net` 에서만 받아 흘려 보냄 |
 
 보내는 글은 `@everyone`·`@here`·역할을 부르지 않습니다(`allowedMentions: users`). 쓰기는 serve-kit
-의 줄 하나를 함께 씁니다.
+의 줄 하나를 함께 씁니다. 권한은 방 목록에서 확인하고, `messages.send` 또는
+`reactions.send` 를 할 수 없는 방은 `Room.features` 에 `false` 로 내려 saya 가 버튼을
+그리지 않게 합니다.
 
 ## 이벤트
 
@@ -85,8 +87,8 @@ Discord 의 서버(길드)에는 채널이 여럿 있습니다. 그중 **일반 
 3. **Reset Token** 으로 봇 토큰을 받아 `.env` 의 `TSUBA_DISCORD_TOKEN` 에 넣습니다. 이 토큰은 봇
    계정 전체 권한이라 비밀번호로 다룹니다.
 4. **OAuth2 → URL Generator** 에서 scope `bot`, 권한 *View Channels, Send Messages, Read Message
-   History, Add Reactions* 를 골라 만든 주소로 봇을 서버에 초대합니다. 방으로 보일 채널에 봇의
-   보기 권한이 있어야 합니다.
+   History, Add Reactions* 를 골라 만든 주소로 봇을 서버에 초대합니다. 봇이 각 방에서 실제로
+   받는 역할/권한이 기준입니다. 숨긴 방은 목록에도 없습니다.
 
 ```sh
 bun adapters/discord/src/cli.ts check   # 서버 수, 방 수, 읽기 전용 방 수만 출력
