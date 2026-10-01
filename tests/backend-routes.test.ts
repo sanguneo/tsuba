@@ -6,10 +6,12 @@ import {
   type Capabilities,
   createHandler,
   type ErrorEnvelope,
+  type FeatureId,
   type MediaFile,
   type Message,
   RESERVED_FEATURES,
   type SendAnswer,
+  type StreamUpdate,
   serve,
 } from "../packages/serve-kit/src/index";
 import { fakeBackend, message, room, sample, schema, TOKEN } from "./fixtures";
@@ -31,14 +33,14 @@ function file(extra: Omit<MediaFile, "body"> = {}): MediaFile {
 }
 
 function liveBackend() {
-  const listeners = new Set<(message: Message) => void>();
+  const listeners = new Set<(update: StreamUpdate) => void>();
   let cleanup = deferred<void>();
   return {
     backend: {
       ...fakeBackend(),
       media: async () => file({ mimeType: "image/png" }),
       messagesAfter: async () => [message],
-      subscribe(listener: (message: Message) => void) {
+      subscribe(listener: (update: StreamUpdate) => void) {
         listeners.add(listener);
         return () => {
           listeners.delete(listener);
@@ -48,6 +50,10 @@ function liveBackend() {
     } satisfies AdapterBackend,
     listeners,
     emit(value: Message) {
+      for (const listener of listeners)
+        listener({ event: "message", message: value });
+    },
+    update(value: StreamUpdate) {
       for (const listener of listeners) listener(value);
     },
     cleanupSignal() {
@@ -103,6 +109,9 @@ function events(response: Response) {
         cursor: "StreamCursor",
         ping: "StreamPing",
         error: "ErrorEnvelope",
+        "message.edited": "StreamMessage",
+        "message.deleted": "StreamMessagesDeleted",
+        "reactions.updated": "StreamReactionsUpdated",
       };
       expect(schema(present(names[expected]))(body)).toBe(true);
       return body;
@@ -158,7 +167,17 @@ test("auth precedes unsupported and unknown routes; every absent feature is 501"
     ),
   );
   expect(gated.map(({ path }) => path).sort()).toEqual(
-    ["/media", "/messages", "/rooms", "/send", "/stream"].sort(),
+    [
+      "/media",
+      "/messages",
+      "/rooms",
+      "/send",
+      "/stream",
+      "/edit",
+      "/delete",
+      "/react",
+      "/read",
+    ].sort(),
   );
   try {
     for (const { path, method } of [
@@ -793,4 +812,345 @@ test("a room's features narrow the declaration and never add to it", async () =>
     complete: true,
   });
   await error(await rooms(), 500, "INTERNAL");
+});
+
+function writer() {
+  const calls: unknown[][] = [];
+  const backend: AdapterBackend = {
+    ...fakeBackend(),
+    send: async (roomId, text, options) => {
+      calls.push(["send", roomId, text, options]);
+      return { ...message, roomId, text, fromMe: true, ...options };
+    },
+    edit: async (roomId, messageId, text) => {
+      calls.push(["edit", roomId, messageId, text]);
+      return {
+        ...message,
+        id: messageId,
+        roomId,
+        text,
+        fromMe: true,
+        editedAt: "2026-01-01T00:01:00.000Z",
+      };
+    },
+    deleteMessage: async (roomId, messageId) => {
+      calls.push(["delete", roomId, messageId]);
+    },
+    react: async (roomId, messageId, emojis) => {
+      calls.push(["react", roomId, messageId, emojis]);
+      return emojis.map((emoji) => ({ emoji, count: 1, mine: true }));
+    },
+    markRead: async (roomId, messageId) => {
+      calls.push(["read", roomId, messageId]);
+    },
+  };
+  return { backend, calls };
+}
+const writes: Capabilities = {
+  ...sample,
+  features: {
+    ...sample.features,
+    "messages.send": { maxLength: 4, receipt: "stored" },
+    "messages.reply": {},
+    "messages.edit": { maxLength: 4, maxAgeSeconds: 60 },
+    "messages.delete": { forEveryone: true },
+    "reactions.read": {},
+    "reactions.send": { maxPerMessage: 1 },
+    "read.mark": {},
+  },
+};
+function post(path: string, body: unknown) {
+  return new Request(`http://adapter${path}`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(body),
+  });
+}
+function without(
+  capabilities: Capabilities,
+  ...ids: FeatureId[]
+): Capabilities {
+  const features = { ...capabilities.features };
+  for (const id of ids) delete features[id];
+  return { ...capabilities, features };
+}
+
+test("a reply, an edit, a delete, reactions and a read mark answer in the contract's shape and reach the backend once each", async () => {
+  const { backend, calls } = writer();
+  const { handle } = createHandler({
+    token: TOKEN,
+    capabilities: writes,
+    backend,
+  });
+  const sent = await answer<SendAnswer>(
+    await handle(post("/send", { roomId: "r", text: "hi", replyTo: "2" })),
+    "SendAnswer",
+  );
+  expect(sent.message.replyTo).toBe("2");
+  await answer(
+    await handle(post("/edit", { roomId: "r", messageId: "2", text: "new" })),
+    "EditAnswer",
+  );
+  await answer(
+    await handle(post("/delete", { roomId: "r", messageId: "2" })),
+    "Done",
+  );
+  const reacted = await answer<{ reactions: unknown[] }>(
+    await handle(
+      post("/react", { roomId: "r", messageId: "2", emojis: ["\u{1F44D}"] }),
+    ),
+    "ReactAnswer",
+  );
+  expect(reacted.reactions).toEqual([
+    { emoji: "\u{1F44D}", count: 1, mine: true },
+  ]);
+  await answer(
+    await handle(post("/react", { roomId: "r", messageId: "2", emojis: [] })),
+    "ReactAnswer",
+  );
+  await answer(
+    await handle(post("/read", { roomId: "r", messageId: "2" })),
+    "Done",
+  );
+  expect(calls).toEqual([
+    ["send", "r", "hi", { replyTo: "2" }],
+    ["edit", "r", "2", "new"],
+    ["delete", "r", "2"],
+    ["react", "r", "2", ["\u{1F44D}"]],
+    ["react", "r", "2", []],
+    ["read", "r", "2"],
+  ]);
+});
+
+test("a write outside its declared limits is refused before the backend, and a reply needs messages.reply", async () => {
+  const { backend, calls } = writer();
+  const { handle } = createHandler({
+    token: TOKEN,
+    capabilities: writes,
+    backend,
+  });
+  for (const [path, body] of [
+    ["/edit", { roomId: "r", messageId: "2", text: "12345" }],
+    ["/edit", { roomId: "r", text: "a" }],
+    ["/edit", { roomId: "r", messageId: "", text: "a" }],
+    ["/delete", { roomId: "r" }],
+    [
+      "/react",
+      { roomId: "r", messageId: "2", emojis: ["\u{1F44D}", "\u{1F525}"] },
+    ],
+    [
+      "/react",
+      { roomId: "r", messageId: "2", emojis: ["\u{1F44D}", "\u{1F44D}"] },
+    ],
+    ["/react", { roomId: "r", messageId: "2", emojis: [""] }],
+    ["/react", { roomId: "r", messageId: "2", emojis: "\u{1F44D}" }],
+    ["/read", { roomId: "r", messageId: 2 }],
+    ["/send", { roomId: "r", text: "hi", replyTo: "" }],
+  ] as const)
+    await error(await handle(post(path, body)), 400, "INVALID_REQUEST");
+  const plain = createHandler({
+    token: TOKEN,
+    capabilities: without(writes, "messages.reply"),
+    backend,
+  });
+  await error(
+    await plain.handle(
+      post("/send", { roomId: "r", text: "hi", replyTo: "2" }),
+    ),
+    501,
+    "NOT_SUPPORTED",
+  );
+  expect(calls).toEqual([]);
+});
+
+test("every write shares one line: four admitted across routes run one at a time, and the next is refused untouched", async () => {
+  const { backend } = writer();
+  const gates = Array.from({ length: 4 }, () => deferred<void>());
+  const entered = Array.from({ length: 4 }, () => deferred<void>());
+  let calls = 0;
+  let active = 0;
+  async function held() {
+    const index = calls++;
+    expect(++active).toBe(1);
+    present(entered[index]).resolve();
+    await bounded(present(gates[index]).promise, "write release");
+    active--;
+  }
+  backend.send = async (roomId, text) => {
+    await held();
+    return { ...message, roomId, text };
+  };
+  backend.edit = async (roomId, messageId, text) => {
+    await held();
+    return { ...message, id: messageId, roomId, text };
+  };
+  backend.deleteMessage = held;
+  backend.markRead = held;
+  const { handle } = createHandler({
+    token: TOKEN,
+    capabilities: writes,
+    backend,
+  });
+  const waiting = [
+    handle(post("/send", { roomId: "r", text: "a" })),
+    handle(post("/edit", { roomId: "r", messageId: "2", text: "b" })),
+    handle(post("/delete", { roomId: "r", messageId: "2" })),
+    handle(post("/read", { roomId: "r", messageId: "2" })),
+  ];
+  const fifth = new Request("http://adapter/react", {
+    method: "POST",
+    headers: jsonHeaders,
+  });
+  Object.defineProperty(fifth, "json", {
+    value: async () => {
+      throw new Error("The refused request body was touched");
+    },
+  });
+  await error(
+    await bounded(handle(fifth), "fifth refused"),
+    429,
+    "RATE_LIMITED",
+  );
+  for (let index = 0; index < 4; index++) {
+    await bounded(present(entered[index]).promise, "serialized write entered");
+    present(gates[index]).resolve();
+  }
+  for (const [index, name] of [
+    "SendAnswer",
+    "EditAnswer",
+    "Done",
+    "Done",
+  ].entries())
+    await answer(
+      await bounded(present(waiting[index]), "write finished"),
+      name,
+    );
+  expect(calls).toBe(4);
+});
+
+test("startup refuses a write without its method, a feature without the one it requires, and an event it cannot send", () => {
+  const { backend } = writer();
+  for (const method of [
+    "edit",
+    "deleteMessage",
+    "react",
+    "markRead",
+  ] as const) {
+    const missing = { ...backend };
+    delete missing[method];
+    expect(() =>
+      createHandler({ token: TOKEN, capabilities: writes, backend: missing }),
+    ).toThrow(/must be declared iff/);
+  }
+  const { send: _send, ...unsending } = backend;
+  expect(() =>
+    createHandler({
+      token: TOKEN,
+      capabilities: without(writes, "messages.send"),
+      backend: unsending,
+    }),
+  ).toThrow(/messages.reply is declared only beside messages.send/);
+  expect(() =>
+    createHandler({
+      token: TOKEN,
+      capabilities: without(writes, "reactions.read"),
+      backend,
+    }),
+  ).toThrow(/reactions.send is declared only beside reactions.read/);
+  const { messagesAfter: _after, ...streaming } = liveBackend().backend;
+  const streamWith = (
+    events: string[],
+    extra: Capabilities["features"] = {},
+  ) => ({
+    ...full,
+    features: {
+      ...full.features,
+      ...extra,
+      "messages.stream": { resume: "none" as const, events },
+    },
+  });
+  expect(() =>
+    createHandler({
+      token: TOKEN,
+      capabilities: streamWith(["typing"]),
+      backend: streaming,
+    }),
+  ).toThrow(/cannot declare the event typing/);
+  expect(() =>
+    createHandler({
+      token: TOKEN,
+      capabilities: streamWith(["reactions.updated"]),
+      backend: streaming,
+    }),
+  ).toThrow(/reactions.updated is declared only beside reactions.read/);
+  expect(() =>
+    createHandler({
+      token: TOKEN,
+      capabilities: streamWith(["reactions.updated", "x-example.pinned"], {
+        "reactions.read": {},
+      }),
+      backend: streaming,
+    }),
+  ).not.toThrow();
+});
+
+test("the stream sends declared events in order among messages, moves the cursor only for new messages, and drops undeclared events", async () => {
+  const live = liveBackend();
+  const capabilities: Capabilities = {
+    ...full,
+    features: {
+      ...full.features,
+      "messages.stream": {
+        resume: "cursor",
+        events: ["message.edited", "message.deleted"],
+      },
+    },
+  };
+  const server = serve({
+    token: TOKEN,
+    capabilities,
+    backend: live.backend,
+    port: 0,
+  });
+  try {
+    const sse = events(
+      await fetch(new URL("/stream", server.url), { headers: bearer }),
+    );
+    await sse.next("ready");
+    const first = sse.next("message");
+    live.emit({ ...message, id: "3" });
+    expect((await first).message.id).toBe("3");
+    expect((await sse.next("cursor")).cursor).toEqual({ [room.id]: "3" });
+    const edited: Message = {
+      ...message,
+      id: "3",
+      text: "Synthetic edit",
+      editedAt: "2026-01-01T00:01:00.000Z",
+    };
+    const edit = sse.next("message.edited");
+    live.update({
+      event: "reactions.updated",
+      roomId: room.id,
+      messageId: "3",
+      reactions: [],
+    });
+    live.update({ event: "message.edited", message: edited });
+    live.update({
+      event: "message.deleted",
+      roomId: room.id,
+      messageIds: ["3"],
+    });
+    expect((await edit).message).toEqual(edited);
+    expect(await sse.next("message.deleted")).toEqual({
+      ok: true,
+      roomId: room.id,
+      messageIds: ["3"],
+    });
+    const next = sse.next("message");
+    live.emit({ ...message, id: "4" });
+    expect((await next).message.id).toBe("4");
+    expect((await sse.next("cursor")).cursor).toEqual({ [room.id]: "4" });
+  } finally {
+    await server.stop(true);
+  }
 });

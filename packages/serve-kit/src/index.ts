@@ -8,15 +8,18 @@ export {
   type MediaFile,
   type Message,
   type MessagesAnswer,
+  type Reaction,
   type ReadMessagesRequest,
   type Room,
   type RoomsAnswer,
   type SendAnswer,
+  type SendOptions,
   type SendRequest,
   type StreamCursor,
   type StreamMessage,
   type StreamPing,
   type StreamReady,
+  type StreamUpdate,
 } from "./backend";
 export {
   type Capabilities,
@@ -28,7 +31,11 @@ export {
   type Features,
   type RoomFeatures,
 } from "./capabilities";
-export { CONTRACT_VERSION, RESERVED_FEATURES } from "./contract";
+export {
+  CONTRACT_VERSION,
+  OPTIONAL_EVENTS,
+  RESERVED_FEATURES,
+} from "./contract";
 export { type ErrorCode, failure, ok, STATUS } from "./envelope";
 export { mediaHeaders } from "./media";
 export { type AdapterOptions, createHandler, serve } from "./server";

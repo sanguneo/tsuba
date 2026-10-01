@@ -29,6 +29,12 @@ export interface Attachment {
   durationSeconds?: number;
 }
 
+export interface Reaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+
 export interface Message {
   id: string;
   roomId: string;
@@ -41,6 +47,7 @@ export interface Message {
   fromMe: boolean;
   replyTo?: string;
   attachments?: Attachment[];
+  reactions?: Reaction[];
 }
 
 export interface RoomsAnswer {
@@ -90,6 +97,26 @@ export interface MediaFile {
   name?: string;
 }
 
+/**
+ * What a backend reports to the stream. `message` is a new message; the others
+ * are sent only when the declaration lists them in `messages.stream.events`.
+ */
+export type StreamUpdate =
+  | { event: "message"; message: Message }
+  | { event: "message.edited"; message: Message }
+  | { event: "message.deleted"; roomId: string; messageIds: string[] }
+  | {
+      event: "reactions.updated";
+      roomId: string;
+      messageId: string;
+      reactions: Reaction[];
+    };
+
+export interface SendOptions {
+  /** Present only when the adapter declares `messages.reply`. */
+  replyTo?: string;
+}
+
 export interface ReadMessagesRequest {
   roomId: string;
   limit: number;
@@ -103,8 +130,17 @@ export interface AdapterBackend {
     request: ReadMessagesRequest,
   ): Promise<Omit<MessagesAnswer, "ok">>;
   messagesAfter?(roomId: string, afterId: string): Promise<Message[]>;
-  subscribe?(listener: (message: Message) => void): () => void;
-  send?(roomId: string, text: string): Promise<Message>;
+  subscribe?(listener: (update: StreamUpdate) => void): () => void;
+  send?(roomId: string, text: string, options: SendOptions): Promise<Message>;
+  edit?(roomId: string, messageId: string, text: string): Promise<Message>;
+  deleteMessage?(roomId: string, messageId: string): Promise<void>;
+  /** Sets this account's reactions on the message to exactly `emojis`. */
+  react?(
+    roomId: string,
+    messageId: string,
+    emojis: string[],
+  ): Promise<Reaction[]>;
+  markRead?(roomId: string, messageId: string): Promise<void>;
   media?(id: string, signal: AbortSignal): Promise<MediaFile>;
 }
 

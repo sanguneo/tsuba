@@ -1,14 +1,27 @@
 import {
+  type DeleteMessageUpdate,
   FileLocation,
   MtPeerNotFoundError,
+  type RawUpdateInfo,
   type TelegramClient,
 } from "@mtcute/bun";
 import {
   type AdapterBackend,
   AdapterError,
   type Message,
+  type StreamUpdate,
 } from "@tsuba/serve-kit";
-import { mapAttachment, mapMessage, mapRoom } from "./mapping";
+import {
+  type MessageLike,
+  mapAttachment,
+  mapMessage,
+  mapReactions,
+  mapRoom,
+  markedPeerId,
+  type RawPeerLike,
+  type RawReactionCountLike,
+  rawReaction,
+} from "./mapping";
 
 /** 400-coded refusals that mean "not allowed here" rather than "malformed". */
 const FORBIDDEN = [
@@ -18,7 +31,25 @@ const FORBIDDEN = [
   "CHAT_RESTRICTED",
   "YOU_BLOCKED_USER",
   "USER_IS_BLOCKED",
+  "MESSAGE_EDIT_TIME_EXPIRED",
+  "REACTION_INVALID",
+  "REACTIONS_TOO_MANY",
 ];
+/** 400-coded refusals of the request itself; Telegram changed nothing. */
+const INVALID = [
+  "MESSAGE_NOT_MODIFIED",
+  "MESSAGE_EMPTY",
+  "MESSAGE_TOO_LONG",
+  "REPLY_MESSAGE_ID_INVALID",
+  "REPLY_TO_INVALID",
+];
+/**
+ * Telegram deletions outside channels and supergroups do not say which chat
+ * they were in; message ids there are unique per account, so the adapter
+ * remembers the room of the ones it has handed out.
+ */
+const REMEMBERED_ROOMS = 20_000;
+const CHANNEL_IDS_BELOW = -1_000_000_000_000;
 const MEDIA_ID = /^(-?\d+):(\d+):([A-Za-z0-9_-]+)$/;
 
 function peerId(value: string): number {
@@ -68,6 +99,13 @@ async function translated<T>(action: () => Promise<T>): Promise<T> {
         "FORBIDDEN",
         "Telegram does not let this account do that here",
       );
+    if (INVALID.includes(code))
+      throw new AdapterError(
+        "INVALID_REQUEST",
+        "Telegram refused the request as it was",
+      );
+    if (code === "MESSAGE_ID_INVALID")
+      throw new AdapterError("NOT_FOUND", "No such message");
     if (
       error instanceof MtPeerNotFoundError ||
       [
@@ -83,6 +121,24 @@ async function translated<T>(action: () => Promise<T>): Promise<T> {
 }
 
 export function telegramBackend(tg: TelegramClient): AdapterBackend {
+  const roomOf = new Map<string, string>();
+  function remember(roomId: string, messageId: string) {
+    if (Number(roomId) <= CHANNEL_IDS_BELOW) return;
+    roomOf.delete(messageId);
+    roomOf.set(messageId, roomId);
+    if (roomOf.size > REMEMBERED_ROOMS)
+      roomOf.delete(roomOf.keys().next().value ?? "");
+  }
+  function mapped(message: MessageLike): Message {
+    const result = mapMessage(message);
+    remember(result.roomId, result.id);
+    return result;
+  }
+  async function existing(roomId: string, id: string) {
+    const [message] = await tg.getMessages(peerId(roomId), [messageId(id)]);
+    if (!message) throw new AdapterError("NOT_FOUND", "No such message");
+    return message;
+  }
   return {
     listRooms: () =>
       translated(async () => {
@@ -115,7 +171,7 @@ export function telegramBackend(tg: TelegramClient): AdapterBackend {
             })
           : [];
         return {
-          messages: [...page].reverse().map(mapMessage),
+          messages: [...page].reverse().map(mapped),
           hasEarlier: earlier.length > 0,
         };
       }),
@@ -137,21 +193,104 @@ export function telegramBackend(tg: TelegramClient): AdapterBackend {
             reverse: true,
           });
           const newer = page.filter((message) => message.id >= offset.id);
-          messages.push(...newer.map(mapMessage));
+          messages.push(...newer.map(mapped));
           const last = newer[newer.length - 1];
           if (!last || page.length < 100) return messages;
           offset = { id: last.id + 1, date: 0 };
         }
       }),
-    subscribe(listener) {
-      const onMessage = (message: Parameters<typeof mapMessage>[0]) =>
-        listener(mapMessage(message));
-      tg.onNewMessage.add(onMessage);
-      return () => tg.onNewMessage.remove(onMessage);
+    subscribe(listener: (update: StreamUpdate) => void) {
+      const onNew = (message: MessageLike) =>
+        listener({ event: "message", message: mapped(message) });
+      const onEdit = (message: MessageLike) =>
+        listener({ event: "message.edited", message: mapped(message) });
+      const onDelete = (update: DeleteMessageUpdate) => {
+        const ids = update.messageIds.map(String);
+        if (update.channelId !== null) {
+          listener({
+            event: "message.deleted",
+            roomId: String(update.channelId),
+            messageIds: ids,
+          });
+          return;
+        }
+        const byRoom = new Map<string, string[]>();
+        for (const id of ids) {
+          const roomId = roomOf.get(id);
+          if (roomId) byRoom.set(roomId, [...(byRoom.get(roomId) ?? []), id]);
+        }
+        for (const [roomId, messageIds] of byRoom)
+          listener({ event: "message.deleted", roomId, messageIds });
+      };
+      const onRaw = ({ update }: RawUpdateInfo) => {
+        if (update._ !== "updateMessageReactions") return;
+        listener({
+          event: "reactions.updated",
+          roomId: String(markedPeerId(update.peer as RawPeerLike)),
+          messageId: String(update.msgId),
+          reactions: mapReactions(
+            (update.reactions.results as RawReactionCountLike[]).map(
+              rawReaction,
+            ),
+          ),
+        });
+      };
+      tg.onNewMessage.add(onNew);
+      tg.onEditMessage.add(onEdit);
+      tg.onDeleteMessage.add(onDelete);
+      tg.onRawUpdate.add(onRaw);
+      return () => {
+        tg.onNewMessage.remove(onNew);
+        tg.onEditMessage.remove(onEdit);
+        tg.onDeleteMessage.remove(onDelete);
+        tg.onRawUpdate.remove(onRaw);
+      };
     },
-    send: (roomId, text) =>
+    send: (roomId, text, { replyTo }) =>
       translated(async () =>
-        mapMessage(await tg.sendText(peerId(roomId), text)),
+        mapped(
+          await tg.sendText(
+            peerId(roomId),
+            text,
+            replyTo === undefined ? {} : { replyTo: messageId(replyTo) },
+          ),
+        ),
+      ),
+    edit: (roomId, id, text) =>
+      translated(async () =>
+        mapped(
+          await tg.editMessage({
+            chatId: peerId(roomId),
+            message: messageId(id),
+            text,
+            // So that every open stream, not only this answer, sees the edit.
+            shouldDispatch: true,
+          }),
+        ),
+      ),
+    deleteMessage: (roomId, id) =>
+      translated(async () => {
+        // Telegram deletes a missing id without complaint; the contract says 404.
+        await existing(roomId, id);
+        remember(roomId, id);
+        await tg.deleteMessagesById(peerId(roomId), [messageId(id)], {
+          revoke: true,
+          shouldDispatch: true,
+        });
+      }),
+    react: (roomId, id, emojis) =>
+      translated(async () => {
+        const message = await tg.sendReaction({
+          chatId: peerId(roomId),
+          message: messageId(id),
+          emoji: emojis.length ? emojis : null,
+          shouldDispatch: true,
+        });
+        return mapped(message ?? (await existing(roomId, id))).reactions ?? [];
+      }),
+    markRead: (roomId, id) =>
+      translated(() =>
+        tg.readHistory(peerId(roomId), { maxId: messageId(id) }),
       ),
     media: (id, signal) =>
       translated(async () => {

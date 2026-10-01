@@ -5,13 +5,21 @@ import {
   type Cursor,
   errorEnvelope,
   type Message,
+  type StreamUpdate,
 } from "./backend";
 import {
   type Capabilities,
   capabilityRevision,
   FEATURE_IDS,
+  type FeatureId,
+  type Features,
 } from "./capabilities";
-import { CONTRACT_VERSION, RESERVED_FEATURES } from "./contract";
+import {
+  CONTRACT_VERSION,
+  FEATURE_REQUIRES,
+  OPTIONAL_EVENTS,
+  RESERVED_FEATURES,
+} from "./contract";
 import { failure, ok } from "./envelope";
 import { mediaHeaders } from "./media";
 
@@ -26,6 +34,60 @@ interface Route {
   method: "GET" | "POST";
   auth: boolean;
   answer: (request: Request) => Response | Promise<Response>;
+}
+
+type Body = Record<string, unknown>;
+
+async function jsonBody(request: Request): Promise<Body> {
+  const type = request.headers
+    .get("content-type")
+    ?.split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  const input: unknown =
+    type === "application/json"
+      ? await request.json().catch(() => undefined)
+      : undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new AdapterError("INVALID_REQUEST", "A JSON object body is required");
+  return input as Body;
+}
+
+function idField(body: Body, name: string): string {
+  const value = body[name];
+  if (typeof value !== "string" || !value)
+    throw new AdapterError(
+      "INVALID_REQUEST",
+      `${name} must be a non-empty string`,
+    );
+  return value;
+}
+
+function textField(body: Body, maxLength: number): string {
+  const { text } = body;
+  if (typeof text !== "string" || !text || [...text].length > maxLength)
+    throw new AdapterError(
+      "INVALID_REQUEST",
+      `text must be 1 to ${maxLength} code points`,
+    );
+  return text;
+}
+
+function emojisField(body: Body, max: number | undefined): string[] {
+  const { emojis } = body;
+  if (
+    !Array.isArray(emojis) ||
+    emojis.some(
+      (emoji) => typeof emoji !== "string" || !emoji || emoji.length > 64,
+    ) ||
+    new Set(emojis).size !== emojis.length ||
+    emojis.length > (max ?? Number.POSITIVE_INFINITY)
+  )
+    throw new AdapterError(
+      "INVALID_REQUEST",
+      "emojis must be distinct emoji, no more than maxPerMessage",
+    );
+  return emojis as string[];
 }
 
 export function createHandler(options: AdapterOptions) {
@@ -43,12 +105,29 @@ export function createHandler(options: AdapterOptions) {
     ["messages.read", "readMessages"],
     ["messages.stream", "subscribe"],
     ["messages.send", "send"],
+    ["messages.edit", "edit"],
+    ["messages.delete", "deleteMessage"],
+    ["reactions.send", "react"],
+    ["read.mark", "markRead"],
     ["attachments.read", "media"],
   ] as const) {
     if (Boolean(features[feature]) !== (typeof backend[method] === "function"))
       throw new Error(
         `${feature} must be declared iff ${method} is implemented`,
       );
+  }
+  for (const [feature, needs] of FEATURE_REQUIRES) {
+    for (const need of needs)
+      if (features[feature] && !features[need])
+        throw new Error(`${feature} is declared only beside ${need}`);
+  }
+  for (const event of features["messages.stream"]?.events ?? []) {
+    const extension = /^x-[a-z][a-z0-9-]*\./.test(event);
+    if (!OPTIONAL_EVENTS.has(event) && !extension)
+      throw new Error(`messages.stream cannot declare the event ${event}`);
+    const need = OPTIONAL_EVENTS.get(event);
+    if (need && !features[need])
+      throw new Error(`${event} is declared only beside ${need}`);
   }
   if (
     (features["messages.stream"]?.resume === "cursor") !==
@@ -62,11 +141,49 @@ export function createHandler(options: AdapterOptions) {
     revision: capabilityRevision(options.capabilities),
   };
   const streams = new Set<() => void>();
-  let sends = 0;
-  let sendTail: Promise<void> = Promise.resolve();
+  let writes = 0;
+  let writeTail: Promise<void> = Promise.resolve();
 
   function unsupported(): Response {
     return failure("NOT_SUPPORTED", "This feature is not supported");
+  }
+
+  /**
+   * The adapter's one write line. A place is taken before the body is read, so
+   * a full line touches neither body nor backend; `prepare` validates, and the
+   * write it returns runs only after the one before it has finished.
+   */
+  function write<K extends FeatureId>(
+    id: K,
+    prepare: (
+      body: Body,
+      feature: NonNullable<Features[K]>,
+    ) => () => Promise<Response>,
+  ): (request: Request) => Promise<Response> {
+    return async (request) => {
+      const feature = features[id];
+      if (!feature) return unsupported();
+      if (writes >= 4) return failure("RATE_LIMITED", "The write line is full");
+      writes++;
+      const previous = writeTail;
+      let release!: () => void;
+      writeTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        const perform = prepare(
+          await jsonBody(request),
+          feature as NonNullable<Features[K]>,
+        );
+        await previous;
+        return await perform();
+      } finally {
+        // Preserve the chain even when an invalid queued body finishes early.
+        await previous;
+        writes--;
+        release();
+      }
+    };
   }
 
   function stream(request: Request): Response {
@@ -98,7 +215,8 @@ export function createHandler(options: AdapterOptions) {
         let resuming = true;
         let unsubscribe: (() => void) | undefined;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const pending: Message[] = [];
+        const pending: StreamUpdate[] = [];
+        const declared = new Set(feature.events ?? []);
         const encoder = new TextEncoder();
         function quietTimer() {
           clearTimeout(timer);
@@ -139,6 +257,22 @@ export function createHandler(options: AdapterOptions) {
           if (publishCursor && Object.keys(covered).length)
             emit("cursor", { ok: true, cursor: covered });
         }
+        // Consecutive messages share one cursor; an undeclared event is dropped.
+        function deliver(updates: StreamUpdate[]) {
+          let run: Message[] = [];
+          for (const update of updates) {
+            if (update.event === "message") {
+              run.push(update.message);
+              continue;
+            }
+            if (!declared.has(update.event)) continue;
+            batch(run);
+            run = [];
+            const { event, ...payload } = update;
+            emit(event, { ok: true, ...payload });
+          }
+          batch(run);
+        }
         streams.add(close);
         request.signal.addEventListener("abort", close, { once: true });
         emit("ready", {
@@ -148,10 +282,10 @@ export function createHandler(options: AdapterOptions) {
         });
         // Subscribe before fetching history so updates during resume cannot fall in a gap.
         try {
-          unsubscribe = backend.subscribe?.((message) => {
+          unsubscribe = backend.subscribe?.((update) => {
             if (closed) return;
-            if (resuming) pending.push(message);
-            else batch([message]);
+            if (resuming) pending.push(update);
+            else deliver([update]);
           });
           if (closed) unsubscribe?.();
         } catch (error) {
@@ -180,10 +314,13 @@ export function createHandler(options: AdapterOptions) {
             if (Object.keys(covered).length)
               emit("cursor", { ok: true, cursor: covered });
             resuming = false;
-            batch(
+            deliver(
               pending.filter(
-                (message) =>
-                  !delivered.has(JSON.stringify([message.roomId, message.id])),
+                (update) =>
+                  update.event !== "message" ||
+                  !delivered.has(
+                    JSON.stringify([update.message.roomId, update.message.id]),
+                  ),
               ),
             );
           } catch (error) {
@@ -274,57 +411,70 @@ export function createHandler(options: AdapterOptions) {
     "/send": {
       method: "POST",
       auth: true,
-      answer: async (request) => {
-        const feature = features["messages.send"];
-        if (!feature) return unsupported();
-        // Reserve before reading the body: a full line touches neither body nor backend.
-        if (sends >= 4) return failure("RATE_LIMITED", "The send line is full");
-        sends++;
-        const previous = sendTail;
-        let release!: () => void;
-        sendTail = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        try {
-          let input: unknown;
-          try {
-            if (
-              request.headers
-                .get("content-type")
-                ?.split(";")[0]
-                ?.trim()
-                .toLowerCase() !== "application/json"
-            )
-              throw new Error();
-            input = await request.json();
-          } catch {
-            throw new AdapterError(
-              "INVALID_REQUEST",
-              "A JSON body is required",
-            );
-          }
-          if (
-            !input ||
-            typeof input !== "object" ||
-            !("roomId" in input) ||
-            typeof input.roomId !== "string" ||
-            !input.roomId ||
-            !("text" in input) ||
-            typeof input.text !== "string" ||
-            !input.text ||
-            [...input.text].length > feature.maxLength
-          )
-            throw new AdapterError("INVALID_REQUEST", "Invalid send body");
-          await previous;
-          const message = await backend.send?.(input.roomId, input.text);
-          return ok({ message });
-        } finally {
-          // Preserve the chain even when an invalid queued body finishes early.
-          await previous;
-          sends--;
-          release();
-        }
-      },
+      answer: write("messages.send", (body, feature) => {
+        const roomId = idField(body, "roomId");
+        const text = textField(body, feature.maxLength);
+        const replyTo =
+          body.replyTo === undefined ? undefined : idField(body, "replyTo");
+        if (replyTo !== undefined && !features["messages.reply"])
+          throw new AdapterError("NOT_SUPPORTED", "Replies are not supported");
+        return async () =>
+          ok({
+            message: await backend.send?.(
+              roomId,
+              text,
+              replyTo === undefined ? {} : { replyTo },
+            ),
+          });
+      }),
+    },
+    "/edit": {
+      method: "POST",
+      auth: true,
+      answer: write("messages.edit", (body, feature) => {
+        const roomId = idField(body, "roomId");
+        const messageId = idField(body, "messageId");
+        const text = textField(body, feature.maxLength);
+        return async () =>
+          ok({ message: await backend.edit?.(roomId, messageId, text) });
+      }),
+    },
+    "/delete": {
+      method: "POST",
+      auth: true,
+      answer: write("messages.delete", (body) => {
+        const roomId = idField(body, "roomId");
+        const messageId = idField(body, "messageId");
+        return async () => {
+          await backend.deleteMessage?.(roomId, messageId);
+          return ok({});
+        };
+      }),
+    },
+    "/react": {
+      method: "POST",
+      auth: true,
+      answer: write("reactions.send", (body, feature) => {
+        const roomId = idField(body, "roomId");
+        const messageId = idField(body, "messageId");
+        const emojis = emojisField(body, feature.maxPerMessage);
+        return async () =>
+          ok({
+            reactions: (await backend.react?.(roomId, messageId, emojis)) ?? [],
+          });
+      }),
+    },
+    "/read": {
+      method: "POST",
+      auth: true,
+      answer: write("read.mark", (body) => {
+        const roomId = idField(body, "roomId");
+        const messageId = idField(body, "messageId");
+        return async () => {
+          await backend.markRead?.(roomId, messageId);
+          return ok({});
+        };
+      }),
     },
   };
 

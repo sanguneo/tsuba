@@ -118,20 +118,48 @@ async function measureLength(tg: TelegramClient) {
   }
 }
 
-// Declare only the features implemented end to end.
-const CAPABILITIES: Capabilities = {
-  provider: { id: "telegram", name: "Telegram" },
-  account: { kind: "user" },
-  adapter: { name: "tsuba-telegram", version: adapterPackage.version },
-  features: {
-    "rooms.list": {},
-    "messages.read": { paging: "before-id", maxLimit: 100 },
-    "messages.stream": { resume: "cursor" },
-    // Measured on the user path: 4096 Unicode code points, not UTF-16 units.
-    "messages.send": { maxLength: 4096, receipt: "stored" },
-    "attachments.read": {},
-  },
-};
+// Measured on the user path: 4096 Unicode code points, not UTF-16 units.
+const MAX_TEXT = 4096;
+
+/**
+ * Declare only the features implemented end to end. The limits that differ by
+ * account or change with Telegram's settings are read from Telegram at start:
+ * the edit window from `help.getConfig` and the reactions one account may
+ * leave on a message from the app config (premium accounts may leave more).
+ */
+async function capabilities(tg: TelegramClient): Promise<Capabilities> {
+  const config = await tg.call({ _: "help.getConfig" });
+  const me = await tg.getMe();
+  const reactions = await tg.appConfig.getField(
+    me.isPremium ? "reactions_user_max_premium" : "reactions_user_max_default",
+    1,
+  );
+  return {
+    provider: { id: "telegram", name: "Telegram" },
+    account: { kind: "user" },
+    adapter: { name: "tsuba-telegram", version: adapterPackage.version },
+    features: {
+      "rooms.list": {},
+      "messages.read": { paging: "before-id", maxLimit: 100 },
+      "messages.stream": {
+        resume: "cursor",
+        events: ["message.edited", "message.deleted", "reactions.updated"],
+      },
+      "messages.send": { maxLength: MAX_TEXT, receipt: "stored" },
+      "messages.reply": {},
+      "messages.edit": {
+        maxLength: MAX_TEXT,
+        maxAgeSeconds: config.editTimeLimit,
+      },
+      // Own messages, revoked for both sides in private chats.
+      "messages.delete": { forEveryone: true },
+      "reactions.read": {},
+      "reactions.send": { maxPerMessage: reactions },
+      "read.mark": {},
+      "attachments.read": {},
+    },
+  };
+}
 
 async function serveForever(tg: TelegramClient) {
   await signedIn(tg);
@@ -139,7 +167,7 @@ async function serveForever(tg: TelegramClient) {
     token: required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_PORT ?? 8790),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
-    capabilities: CAPABILITIES,
+    capabilities: await capabilities(tg),
     backend: telegramBackend(tg),
   });
   console.log(`tsuba-telegram listening on ${server.hostname}:${server.port}`);

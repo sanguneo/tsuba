@@ -6,6 +6,40 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.2 — 2026-10-01
+
+Additive: a 0.2.1 client works with a 0.2.2 adapter (it ignores the new routes,
+keys and events), and a 0.2.2 client with a 0.2.1 adapter (which cannot declare
+any of the new features, so the client draws none of them).
+
+### Added
+
+- **Replies**: `replyTo` on `POST /send`, behind `messages.reply`, which needs
+  `messages.send`. Without the feature, `replyTo` is `501 NOT_SUPPORTED` and
+  nothing is sent.
+- **`POST /edit`** (`messages.edit`, now with a required `maxLength` beside
+  `maxAgeSeconds`), **`POST /delete`** (`messages.delete`), **`POST /react`**
+  (`reactions.send`, which needs `reactions.read`) and **`POST /read`**
+  (`read.mark`). `/react` sets this account's reactions on a message to
+  exactly the list it is given, so repeating it changes nothing more.
+- **`Message.reactions`** and the **`Reaction`** schema (`emoji`, `count`,
+  `mine`), behind `reactions.read`.
+- **Stream events** `message.edited`, `message.deleted` and
+  `reactions.updated`, sent only when `messages.stream` lists them in its new
+  `events` parameter. Resume replays `message` only.
+- **`x-in`** on a feature that rides on another operation's field instead of a
+  route of its own, **`x-requires`** on a feature declared only beside others,
+  and **`x-feature`** on an event that needs a feature, so that serve-kit and
+  the tests read these from the document.
+
+### Clarified
+
+- Every write (`/send`, `/edit`, `/delete`, `/react`, `/read`) shares the one
+  line `/send` had: one at a time, four admitted, the next `429` untouched.
+
+Still reserved: `typing.send`, `threads.read`, `attachments.send`, and the
+events `room.updated` and `typing`.
+
 ## 0.2.1 — 2026-10-01
 
 Additive: a 0.2.0 client works with a 0.2.1 adapter, and a 0.2.1 client with a

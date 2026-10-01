@@ -9,10 +9,10 @@ import { createHash } from "node:crypto";
 export interface FeatureParams {
   "rooms.list": Record<string, never>;
   "messages.read": { paging: "none" | "before-id"; maxLimit: number };
-  "messages.stream": { resume: "none" | "cursor" };
+  "messages.stream": { resume: "none" | "cursor"; events?: string[] };
   "messages.send": { maxLength: number; receipt: "accepted" | "stored" };
   "messages.reply": Record<string, never>;
-  "messages.edit": { maxAgeSeconds?: number };
+  "messages.edit": { maxLength: number; maxAgeSeconds?: number };
   "messages.delete": { forEveryone: boolean };
   "reactions.read": Record<string, never>;
   "reactions.send": { maxPerMessage?: number };

@@ -1,6 +1,7 @@
 import type {
   Attachment,
   Message,
+  Reaction,
   Room,
 } from "../../../packages/serve-kit/src/index";
 
@@ -31,6 +32,14 @@ export interface MediaLike {
   isAnimation?: boolean;
   ttlSeconds?: number | null;
 }
+export interface ReactionLike {
+  /** A Unicode emoji, or a custom emoji's document id. */
+  emoji: unknown;
+  isPaid?: boolean;
+  count: number;
+  /** Set when this account chose it. */
+  order: number | null;
+}
 export interface MessageLike {
   id: number;
   chat: PeerLike;
@@ -44,6 +53,7 @@ export interface MessageLike {
   raw?: { media?: unknown; action?: unknown };
   editDate?: Date | null;
   replyToMessage?: { id: number | null } | null;
+  reactions?: { reactions: readonly ReactionLike[] } | null;
 }
 export interface DialogLike {
   peer: PeerLike;
@@ -145,12 +155,60 @@ export function mapAttachment(
   };
 }
 
+/** Only reactions with a Unicode emoji: custom and paid ones have no emoji to show or send back. */
+export function mapReactions(list: readonly ReactionLike[]): Reaction[] {
+  return list.flatMap((reaction) =>
+    typeof reaction.emoji === "string" &&
+    reaction.emoji &&
+    !reaction.isPaid &&
+    Number.isSafeInteger(reaction.count) &&
+    reaction.count > 0
+      ? [
+          {
+            emoji: reaction.emoji,
+            count: reaction.count,
+            mine: reaction.order !== null,
+          },
+        ]
+      : [],
+  );
+}
+
+export type RawPeerLike =
+  | { _: "peerUser"; userId: number }
+  | { _: "peerChat"; chatId: number }
+  | { _: "peerChannel"; channelId: number };
+
+/** The marked id Telegram clients use for a peer, the same string a room's id is. */
+export function markedPeerId(peer: RawPeerLike): number {
+  if (peer._ === "peerUser") return peer.userId;
+  if (peer._ === "peerChat") return -peer.chatId;
+  return -1_000_000_000_000 - peer.channelId;
+}
+
+export interface RawReactionCountLike {
+  reaction: { _: string; emoticon?: string };
+  count: number;
+  chosenOrder?: number;
+}
+
+/** A raw `updateMessageReactions` count in the shape `mapReactions` takes. */
+export function rawReaction(raw: RawReactionCountLike): ReactionLike {
+  return {
+    emoji: raw.reaction._ === "reactionEmoji" ? raw.reaction.emoticon : null,
+    isPaid: raw.reaction._ === "reactionPaid",
+    count: raw.count,
+    order: raw.chosenOrder ?? null,
+  };
+}
+
 export function mapMessage(message: MessageLike): Message {
   const id = String(message.id);
   const roomId = String(message.chat.id);
   const replyTo = message.replyToMessage?.id;
   const media = message.media ?? null;
   const attachment = media ? mapAttachment(roomId, id, media) : null;
+  const reactions = mapReactions(message.reactions?.reactions ?? []);
   return {
     id,
     roomId,
@@ -169,5 +227,6 @@ export function mapMessage(message: MessageLike): Message {
     ...(message.editDate ? { editedAt: message.editDate.toISOString() } : {}),
     ...(replyTo == null ? {} : { replyTo: String(replyTo) }),
     ...(attachment ? { attachments: [attachment] } : {}),
+    ...(reactions.length ? { reactions } : {}),
   };
 }

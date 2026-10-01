@@ -5,8 +5,11 @@ import {
   type MessageLike,
   mapAttachment,
   mapMessage,
+  mapReactions,
   mapRoom,
+  markedPeerId,
   type PeerLike,
+  rawReaction,
 } from "../adapters/telegram/src/mapping";
 import { schema } from "./fixtures";
 
@@ -231,4 +234,47 @@ test("no attachment for self-destructing media, link previews or unknown media",
     expect(schema("Message")(message)).toBe(true);
     expect(message.attachments).toBeUndefined();
   }
+});
+
+test("reactions keep Unicode emoji with counts and this account's choice, and leave out custom, paid and empty ones", () => {
+  const message = mapMessage({
+    ...input,
+    reactions: {
+      reactions: [
+        { emoji: "\u{1F44D}", count: 3, order: 0 },
+        { emoji: "\u{1F525}", count: 1, order: null },
+        { emoji: { low: 1, high: 2 }, count: 2, order: null },
+        { emoji: "\u{2B50}", isPaid: true, count: 5, order: null },
+        { emoji: "\u{1F622}", count: 0, order: null },
+      ],
+    },
+  });
+  expect(schema("Message")(message)).toBe(true);
+  expect(message.reactions).toEqual([
+    { emoji: "\u{1F44D}", count: 3, mine: true },
+    { emoji: "\u{1F525}", count: 1, mine: false },
+  ]);
+  expect(
+    "reactions" in mapMessage({ ...input, reactions: { reactions: [] } }),
+  ).toBe(false);
+  expect("reactions" in mapMessage({ ...input, reactions: null })).toBe(false);
+});
+
+test("raw reaction updates name their room by the marked id and their emoji as parsed ones do", () => {
+  expect(markedPeerId({ _: "peerUser", userId: 123 })).toBe(123);
+  expect(markedPeerId({ _: "peerChat", chatId: 456 })).toBe(-456);
+  expect(markedPeerId({ _: "peerChannel", channelId: 789 })).toBe(
+    -1000000000789,
+  );
+  expect(
+    mapReactions([
+      rawReaction({
+        reaction: { _: "reactionEmoji", emoticon: "\u{1F44D}" },
+        count: 2,
+        chosenOrder: 1,
+      }),
+      rawReaction({ reaction: { _: "reactionCustomEmoji" }, count: 1 }),
+      rawReaction({ reaction: { _: "reactionPaid" }, count: 4 }),
+    ]),
+  ).toEqual([{ emoji: "\u{1F44D}", count: 2, mine: true }]);
 });

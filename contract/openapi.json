@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tsuba — messenger adapter contract",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
-    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`. Every name in use or reserved is listed in tsuba's `docs/contract.md`, and every version is in `contract/CHANGELOG.md` beside this file.\n\n## Envelope\n\nEvery JSON response is an envelope. Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows. `/media` answers bytes and `/stream` answers events; their failures before the first byte are envelopes too.\n\n## Versions\n\n`info.version` is `MAJOR.MINOR.PATCH`, and `GET /capabilities` answers it as `contract.version`. A client built against version X works with an adapter answering Y when Y is in the caret range of X: the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range every change is additive: a route, a key, a feature id, an enum value, an error code, an event. Removing or renaming any of those, or changing what one means, is breaking and opens a new range (MINOR before 1.0, MAJOR after). A client that meets an adapter outside its range says so and draws nothing from it.\n\n## What a client does not know\n\nConsumers ignore keys, feature ids and events they do not know. An enum value a client does not know means the least that field can mean: treat it as the first value listed. An error code it does not know goes to its default branch.\n\n## Capabilities\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. The declaration is network-wide; a room where it differs carries `features` of its own, which narrow the declaration and never add to it. Names under `x-<provider>.` (feature ids, events and object keys) are provider extensions.\n\n## Routes\n\nReads are `GET` on a noun, writes are `POST` on a verb. Every operation but `/health` and `/capabilities` names the one feature that gates it in `x-feature`. Every documented route is routed by every adapter; a route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`, and an adapter declares a feature exactly when it performs it end to end. A feature marked `x-reserved` has a name but no route yet: no adapter can declare it, and its parameters may still change, until a version defines its route.\n\n## Writes\n\nA write answered with any error code but `INTERNAL` changed nothing. `INTERNAL`, a timeout or a dropped connection leaves the outcome unknown: the adapter never retries it, and a client says so rather than repeating it on its own.\n\n## Ids, times and text\n\nIds are opaque non-empty strings: compare, store and send them back as they are, never as numbers. Times are RFC 3339 `date-time`. Text lengths are counted in Unicode code points.\n\n## Security posture\n\nA shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header. Message content, names and files are someone else's words: a client draws them as text, never as markup.",
+    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`. Every name in use or reserved is listed in tsuba's `docs/contract.md`, and every version is in `contract/CHANGELOG.md` beside this file.\n\n## Envelope\n\nEvery JSON response is an envelope. Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows. `/media` answers bytes and `/stream` answers events; their failures before the first byte are envelopes too.\n\n## Versions\n\n`info.version` is `MAJOR.MINOR.PATCH`, and `GET /capabilities` answers it as `contract.version`. A client built against version X works with an adapter answering Y when Y is in the caret range of X: the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range every change is additive: a route, a key, a feature id, an enum value, an error code, an event. Removing or renaming any of those, or changing what one means, is breaking and opens a new range (MINOR before 1.0, MAJOR after). A client that meets an adapter outside its range says so and draws nothing from it.\n\n## What a client does not know\n\nConsumers ignore keys, feature ids and events they do not know. An enum value a client does not know means the least that field can mean: treat it as the first value listed. An error code it does not know goes to its default branch.\n\n## Capabilities\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. The declaration is network-wide; a room where it differs carries `features` of its own, which narrow the declaration and never add to it. Names under `x-<provider>.` (feature ids, events and object keys) are provider extensions.\n\n## Routes\n\nReads are `GET` on a noun, writes are `POST` on a verb. Every operation but `/health` and `/capabilities` names the one feature that gates it in `x-feature`; a feature without a route of its own names the field it rides on in `x-in`, and one that is declared only beside others names them in `x-requires`. Every documented route is routed by every adapter; a route whose feature an adapter does not declare answers `501 NOT_SUPPORTED`, and an adapter declares a feature exactly when it performs it end to end. A feature marked `x-reserved` has a name but no route yet: no adapter can declare it, and its parameters may still change, until a version defines its route.\n\n## Writes\n\nWrites (`/send`, `/edit`, `/delete`, `/react` and `/read`) share one line per adapter: one runs at a time, at most four are admitted, and the next is `429 RATE_LIMITED` having changed nothing. A write answered with any error code but `INTERNAL` changed nothing. `INTERNAL`, a timeout or a dropped connection leaves the outcome unknown: the adapter never retries it, and a client says so rather than repeating it on its own.\n\n## Ids, times and text\n\nIds are opaque non-empty strings: compare, store and send them back as they are, never as numbers. Times are RFC 3339 `date-time`. Text lengths are counted in Unicode code points.\n\n## Security posture\n\nA shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header. Message content, names and files are someone else's words: a client draws them as text, never as markup.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -262,7 +262,7 @@
         "operationId": "stream",
         "x-feature": "messages.stream",
         "summary": "New messages as Server-Sent Events.",
-        "description": "Feature `messages.stream`. The same shape the KakaoTalk cores use: `ready` once, then `message` per message with a `cursor` after the messages it covers, `ping` while quiet, and `error` once before the stream ends. With `resume: cursor`, a reconnection hands back the last cursor as repeated `since=<roomId>:<messageId>` (split at the last colon) and the adapter sends what each named room received after that id before going live; a room not named starts from now. A cursor the adapter cannot honour is refused, never downgraded to now. An `error` event carries any code a read can answer. A client skips an event this version does not list; names in use or reserved for later versions are in tsuba's `docs/contract.md`.",
+        "description": "Feature `messages.stream`. The same shape the KakaoTalk cores use: `ready` once, then `message` per message with a `cursor` after the messages it covers, `ping` while quiet, and `error` once before the stream ends. With `resume: cursor`, a reconnection hands back the last cursor as repeated `since=<roomId>:<messageId>` (split at the last colon) and the adapter sends what each named room received after that id before going live; a room not named starts from now. A cursor the adapter cannot honour is refused, never downgraded to now. An `error` event carries any code a read can answer. Besides these, an adapter sends the events its `messages.stream` lists in `events`: `message.edited`, the whole message as it now is after an edit or any other change to it; `message.deleted`, the ids of messages gone from a room, sent for the deletions the adapter can place in a room, so its absence is no proof that a message still exists; and `reactions.updated`, a message's reactions as they now are. Resume replays `message` only. A client skips an event this version does not list; names reserved for later versions are in tsuba's `docs/contract.md`.",
         "parameters": [
           {
             "name": "since",
@@ -325,6 +325,22 @@
               "$ref": "#/components/schemas/StreamCursor"
             }
           },
+          "message.edited": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamMessage"
+            }
+          },
+          "message.deleted": {
+            "schema": {
+              "$ref": "#/components/schemas/StreamMessagesDeleted"
+            }
+          },
+          "reactions.updated": {
+            "x-feature": "reactions.read",
+            "schema": {
+              "$ref": "#/components/schemas/StreamReactionsUpdated"
+            }
+          },
           "ping": {
             "schema": {
               "$ref": "#/components/schemas/StreamPing"
@@ -343,7 +359,7 @@
         "operationId": "send",
         "x-feature": "messages.send",
         "summary": "Send text to a room.",
-        "description": "Feature `messages.send`. Sends are one at a time per adapter; at most four wait, and a fifth is `429 RATE_LIMITED` having changed nothing. Text that is empty or longer than the feature's `maxLength` code points is `400 INVALID_REQUEST`. With `receipt: stored` the answer carries the message the messenger stored. Every error but `INTERNAL` means nothing was sent; a send whose outcome is uncertain is never retried by the adapter.",
+        "description": "Feature `messages.send`. Sends share the adapter's one write line: one at a time, at most four admitted, and the next is `429 RATE_LIMITED` having changed nothing. With `messages.reply`, `replyTo` names the message in the same room this one answers; an adapter without it answers `replyTo` with `501 NOT_SUPPORTED`. Text that is empty or longer than the feature's `maxLength` code points is `400 INVALID_REQUEST`. With `receipt: stored` the answer carries the message the messenger stored. Every error but `INTERNAL` means nothing was sent; a send whose outcome is uncertain is never retried by the adapter.",
         "requestBody": {
           "required": true,
           "content": {
@@ -361,6 +377,222 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SendAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
+          }
+        }
+      }
+    },
+    "/edit": {
+      "post": {
+        "operationId": "edit",
+        "x-feature": "messages.edit",
+        "summary": "Replace the text of a message this account sent.",
+        "description": "Feature `messages.edit`. Text that is empty or longer than the feature's `maxLength` code points is `400 INVALID_REQUEST`, and so is text the message already has; a message older than `maxAgeSeconds`, or one the messenger does not let this account edit, is `403 FORBIDDEN`. The answer carries the message as the messenger now stores it. Edits share the write line with `/send`, and an edit whose outcome is uncertain is never retried.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edited.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
+          }
+        }
+      }
+    },
+    "/delete": {
+      "post": {
+        "operationId": "delete",
+        "x-feature": "messages.delete",
+        "summary": "Delete a message.",
+        "description": "Feature `messages.delete`. With the feature's `forEveryone: true` the message is removed for every participant, otherwise only for this account. A message the messenger does not let this account delete is `403 FORBIDDEN`; one this account cannot see is `404 NOT_FOUND`. Deletes share the write line with `/send`, and a delete whose outcome is uncertain is never retried.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
+          }
+        }
+      }
+    },
+    "/react": {
+      "post": {
+        "operationId": "react",
+        "x-feature": "reactions.send",
+        "summary": "Set this account's reactions on a message.",
+        "description": "Feature `reactions.send`. `emojis` becomes this account's reactions on the message, replacing what it had; `[]` removes them. More than `maxPerMessage`, or the same emoji twice, is `400 INVALID_REQUEST`; an emoji the room does not allow is `403 FORBIDDEN`. The answer carries the message's reactions afterwards. Reactions share the write line with `/send`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReactRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReactAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/NotSupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReauthRequired"
+          }
+        }
+      }
+    },
+    "/read": {
+      "post": {
+        "operationId": "read",
+        "x-feature": "read.mark",
+        "summary": "Mark a room read up to a message.",
+        "description": "Feature `read.mark`. Marks the room read up to and including `messageId`, as the messenger's own client does when a person reads it; the messenger may tell the other participants. Marking what is already read changes nothing and succeeds. Read marks share the write line with `/send`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Marked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
                 }
               }
             }
@@ -722,6 +954,15 @@
               "cursor"
             ],
             "description": "`none`: a reconnection starts from now. `cursor`: a reconnection resumes from per-room cursors without a gap."
+          },
+          "events": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "The events this adapter sends besides `ready`, `message`, `cursor`, `ping` and `error`: any of `message.edited`, `message.deleted` and `reactions.updated`, or a provider's own `x-<provider>.` events. Absent means none of them. Resume replays `message` only: an edit, a deletion or a reaction missed while disconnected is not sent again, so a client that must be exact rereads `/messages`."
           }
         }
       },
@@ -749,24 +990,32 @@
       },
       "FeatureMessagesReply": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Send a message as a reply to another: `replyTo` on `POST /send`."
+        "x-in": "SendRequest.replyTo",
+        "x-requires": [
+          "messages.send"
+        ],
+        "description": "Send a message as a reply to another in the same room: `replyTo` on `POST /send`. Declared only beside `messages.send`."
       },
       "FeatureMessagesEdit": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Edit a message the account sent: `POST /edit`.",
+        "description": "Replace the text of a message this account sent: `POST /edit`.",
+        "required": [
+          "maxLength"
+        ],
         "properties": {
+          "maxLength": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "Longest text the messenger accepts in an edit, in Unicode code points."
+          },
           "maxAgeSeconds": {
             "$ref": "#/components/schemas/PositiveInteger",
-            "description": "Absent when the messenger sets no age limit."
+            "description": "How long after sending a message can still be edited. Absent when the messenger sets no age limit."
           }
         }
       },
       "FeatureMessagesDelete": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Delete a message: `POST /delete`.",
+        "description": "Delete a message: `POST /delete`. The messenger decides whose messages this account may delete; where it does not let it, the answer is `403 FORBIDDEN`.",
         "required": [
           "forEveryone"
         ],
@@ -779,24 +1028,25 @@
       },
       "FeatureReactionsRead": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Messages carry their reactions: `Message.reactions`."
+        "x-in": "Message.reactions",
+        "description": "Messages carry their reactions: `Message.reactions`, and `reactions.updated` on the stream when `messages.stream` lists it in `events`."
       },
       "FeatureReactionsSend": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Add or remove a reaction: `POST /react`.",
+        "x-requires": [
+          "reactions.read"
+        ],
+        "description": "Set this account's reactions on a message: `POST /react`. Declared only beside `reactions.read`.",
         "properties": {
           "maxPerMessage": {
             "$ref": "#/components/schemas/PositiveInteger",
-            "description": "Absent when the messenger sets no limit."
+            "description": "Most reactions this account may leave on one message. Absent when the messenger sets no limit."
           }
         }
       },
       "FeatureReadMark": {
         "type": "object",
-        "x-reserved": true,
-        "description": "Reserved. Mark a room read up to a message, as the messenger's own client would: `POST /read`."
+        "description": "Mark a room read up to a message, as the messenger's own client does when a person reads it: `POST /read`."
       },
       "FeatureTypingSend": {
         "type": "object",
@@ -1126,6 +1376,30 @@
           }
         }
       },
+      "Reaction": {
+        "type": "object",
+        "description": "One reaction on a message: an emoji, how many accounts chose it, and whether this account is one of them. Only reactions the adapter can name as a Unicode emoji appear; a messenger's custom or paid reactions may be left out.",
+        "required": [
+          "emoji",
+          "count",
+          "mine"
+        ],
+        "properties": {
+          "emoji": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The emoji as Unicode text, exactly as `POST /react` takes it back."
+          },
+          "count": {
+            "$ref": "#/components/schemas/PositiveInteger",
+            "description": "How many accounts chose it."
+          },
+          "mine": {
+            "type": "boolean",
+            "description": "Whether this account chose it."
+          }
+        }
+      },
       "Message": {
         "type": "object",
         "required": [
@@ -1192,6 +1466,14 @@
               "$ref": "#/components/schemas/Attachment"
             },
             "description": "The files the message carries, in the order the messenger shows them. Present only when the adapter declares `attachments.read` and the message carries a file it can describe."
+          },
+          "reactions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Reaction"
+            },
+            "description": "The reactions on the message, in the order the messenger shows them. Present only when the adapter declares `reactions.read` and the message has reactions it can name."
           }
         }
       },
@@ -1258,6 +1540,61 @@
           }
         }
       },
+      "StreamMessagesDeleted": {
+        "type": "object",
+        "required": [
+          "ok",
+          "roomId",
+          "messageIds"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageIds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Messages gone from the room."
+          }
+        }
+      },
+      "StreamReactionsUpdated": {
+        "type": "object",
+        "required": [
+          "ok",
+          "roomId",
+          "messageId",
+          "reactions"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reaction"
+            },
+            "description": "The message's reactions as they now are; empty when it has none the adapter can name."
+          }
+        }
+      },
       "StreamCursor": {
         "type": "object",
         "required": [
@@ -1298,6 +1635,11 @@
           "text": {
             "type": "string",
             "minLength": 1
+          },
+          "replyTo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "With `messages.reply`: the id of the message in the same room this one answers. An adapter that does not declare `messages.reply` answers it with `501 NOT_SUPPORTED` and sends nothing."
           }
         }
       },
@@ -1313,6 +1655,138 @@
           },
           "message": {
             "$ref": "#/components/schemas/Message"
+          }
+        }
+      },
+      "EditRequest": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "messageId",
+          "text"
+        ],
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The whole new text, at most the feature's `maxLength` code points."
+          }
+        }
+      },
+      "EditAnswer": {
+        "type": "object",
+        "required": [
+          "ok",
+          "message"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "message": {
+            "$ref": "#/components/schemas/Message",
+            "description": "The message as the messenger now stores it."
+          }
+        }
+      },
+      "DeleteRequest": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "messageId"
+        ],
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ReactRequest": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "messageId",
+          "emojis"
+        ],
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "emojis": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "This account's reactions on the message after the write, replacing whatever it had; `[]` removes them. At most the feature's `maxPerMessage`."
+          }
+        }
+      },
+      "ReactAnswer": {
+        "type": "object",
+        "required": [
+          "ok",
+          "reactions"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reaction"
+            },
+            "description": "The message's reactions after the write; empty when it has none the adapter can name."
+          }
+        }
+      },
+      "ReadRequest": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "messageId"
+        ],
+        "properties": {
+          "roomId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The newest message read: it and every message before it in the room are marked read."
+          }
+        }
+      },
+      "Done": {
+        "type": "object",
+        "description": "The write was performed.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
           }
         }
       }

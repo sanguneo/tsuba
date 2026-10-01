@@ -5,7 +5,9 @@ that holds one messenger account (Telegram first; Slack, Discord and others
 later) and answers one shared HTTP + SSE contract, `contract/openapi.json`.
 `saya` is the web client that draws it. KakaoTalk is not here: it is answered
 by the `kanao`/`kamado` cores on the machine that runs the desktop client, with
-their own contract.
+their own contract, and saya connects to them directly. Do not build a
+translator adapter for them; the owner decided against it on 2026-10-01, and
+the reasons and what would reopen it are in `docs/contract.md`.
 
 ## Commands
 
@@ -38,8 +40,10 @@ bun run test
   MAJOR is 0; removing, renaming or changing a meaning opens a new MINOR), say
   why in `contract/CHANGELOG.md`, and follow the order in `docs/contract.md`.
 - The document is machine-read, not only prose: `x-feature` names the one
-  feature that gates each operation, `x-reserved` marks feature ids with no
-  route yet, and serve-kit refuses to declare a reserved one.
+  feature that gates each operation (and the feature an event needs),
+  `x-in` the field a route-less feature rides on, `x-requires` the features
+  another is declared only beside, and `x-reserved` marks feature ids with no
+  route yet. serve-kit reads them and refuses a declaration that breaks them.
 - **A specification nobody checks is a rumour.** `tests/contract.test.ts` asks
   the running handler whether every documented route is routed, whether the
   capability vocabulary in the document is the one `serve-kit` declares, which
