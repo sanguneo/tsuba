@@ -1,0 +1,13 @@
+node_modules/
+*.log
+.env
+.env.*
+!.env.example
+
+# Messenger sessions are passwords
+sessions/
+*.session
+
+# Agent session transcripts, not product
+.omo/
+.senpi/

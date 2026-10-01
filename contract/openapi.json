@@ -1,0 +1,373 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "tsuba — messenger adapter contract",
+    "version": "0.1.0",
+    "summary": "The HTTP + SSE surface every tsuba messenger adapter answers.",
+    "description": "One contract, one adapter per messenger. Each adapter is a local process holding one messenger account; a client written against this document works with any of them, and draws only what each one declares in `GET /capabilities`.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose. `message` is for a person; branch on `code`, and keep a default branch because the set grows.\n\n**Consumers must ignore keys they do not know.** Adding a key, a feature id or an error code is not breaking; removing or renaming one, or changing what an existing one means, is, and lands in a minor version with the reason in the changelog.\n\n**Absent means unsupported.** A feature an adapter does not declare is not supported, and a client must not draw a control for it. An enum value a client does not know means the least that field can mean: treat it as the first value listed.\n\n**Security posture.** A shared bearer token, loopback binding by default, and no TLS of its own; the token is a password to the user's messenger account. Reach it through SSH forwarding, a VPN, or a reverse proxy that terminates TLS and injects the header.\n\nThis version covers only the routes that are implemented: `/health` and `/capabilities`. Rooms, message reads, the stream and sending arrive with the code that answers them.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Liveness, with no token, so a proxy can be checked apart from authentication.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The adapter is answering.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "operationId": "capabilities",
+        "summary": "What this adapter can do, and the limits its messenger enforces.",
+        "description": "Like an AI API listing its models and what each supports. `revision` changes whenever anything else in the answer does, so a client can tell a held answer is stale. Today the features are network-wide; a room whose features differ will say so on the room itself once rooms are in this contract.",
+        "responses": {
+          "200": {
+            "description": "The declaration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED`: missing or wrong bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "PositiveInteger": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "Known codes. The set grows: keep a default branch.",
+        "enum": [
+          "UNAUTHORIZED",
+          "INVALID_REQUEST",
+          "NOT_FOUND",
+          "METHOD_NOT_ALLOWED",
+          "NOT_SUPPORTED",
+          "RATE_LIMITED",
+          "BUSY",
+          "INTERNAL"
+        ]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "ok",
+          "error"
+        ],
+        "properties": {
+          "ok": {
+            "const": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "required": [
+          "ok",
+          "contract",
+          "adapter",
+          "provider",
+          "account",
+          "revision",
+          "features"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "contract": {
+            "type": "object",
+            "required": [
+              "version"
+            ],
+            "properties": {
+              "version": {
+                "type": "string",
+                "description": "The `info.version` of this document the adapter answers."
+              }
+            }
+          },
+          "adapter": {
+            "type": "object",
+            "required": [
+              "name",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string",
+                "description": "The adapter's own release, independent of the contract version."
+              }
+            }
+          },
+          "provider": {
+            "type": "object",
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Stable, e.g. `telegram`. Do not infer features from it; read `features`."
+              },
+              "name": {
+                "type": "string",
+                "description": "For display."
+              }
+            }
+          },
+          "account": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "bot",
+                  "official"
+                ],
+                "description": "`user`: the adapter acts as the person, seeing what their own client sees. `bot`: a bot account, seeing only where it was added. `official`: an official or business account. A client says which it is showing."
+              }
+            }
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "description": "Opaque content hash of the declaration."
+          },
+          "features": {
+            "$ref": "#/components/schemas/Features"
+          }
+        }
+      },
+      "Features": {
+        "type": "object",
+        "description": "Supported features by id. Absent means unsupported. Ids under `x-<provider>.` are provider extensions; ignore any id you do not know.",
+        "properties": {
+          "rooms.list": {
+            "type": "object",
+            "description": "List the conversations the account can see."
+          },
+          "messages.read": {
+            "type": "object",
+            "required": [
+              "paging",
+              "maxLimit"
+            ],
+            "description": "Read a room's messages, oldest first.",
+            "properties": {
+              "paging": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "before-id"
+                ],
+                "description": "`none`: only the newest window. `before-id`: earlier pages before a message id."
+              },
+              "maxLimit": {
+                "$ref": "#/components/schemas/PositiveInteger",
+                "description": "Most messages one read returns."
+              }
+            }
+          },
+          "messages.stream": {
+            "type": "object",
+            "required": [
+              "resume"
+            ],
+            "description": "Receive new messages over SSE.",
+            "properties": {
+              "resume": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "cursor"
+                ],
+                "description": "`none`: a reconnection starts from now. `cursor`: a reconnection resumes from per-room cursors without a gap."
+              }
+            }
+          },
+          "messages.send": {
+            "type": "object",
+            "required": [
+              "maxLength",
+              "receipt"
+            ],
+            "description": "Send text.",
+            "properties": {
+              "maxLength": {
+                "$ref": "#/components/schemas/PositiveInteger",
+                "description": "Longest text the messenger accepts, in Unicode code points."
+              },
+              "receipt": {
+                "type": "string",
+                "enum": [
+                  "accepted",
+                  "stored"
+                ],
+                "description": "`accepted`: the messenger took the request, nothing more is known. `stored`: the answer carries the id of the message the messenger stored."
+              }
+            }
+          },
+          "messages.reply": {
+            "type": "object",
+            "description": "Send a message as a reply to another."
+          },
+          "messages.edit": {
+            "type": "object",
+            "description": "Edit a message the account sent.",
+            "properties": {
+              "maxAgeSeconds": {
+                "$ref": "#/components/schemas/PositiveInteger",
+                "description": "Absent when the messenger sets no age limit."
+              }
+            }
+          },
+          "messages.delete": {
+            "type": "object",
+            "required": [
+              "forEveryone"
+            ],
+            "description": "Delete a message.",
+            "properties": {
+              "forEveryone": {
+                "type": "boolean",
+                "description": "Whether deletion removes it for every participant rather than only this account."
+              }
+            }
+          },
+          "reactions.read": {
+            "type": "object",
+            "description": "Messages carry their reactions."
+          },
+          "reactions.send": {
+            "type": "object",
+            "description": "Add or remove a reaction.",
+            "properties": {
+              "maxPerMessage": {
+                "$ref": "#/components/schemas/PositiveInteger",
+                "description": "Absent when the messenger sets no limit."
+              }
+            }
+          },
+          "read.mark": {
+            "type": "object",
+            "description": "Mark a room read up to a message, as the messenger's own client would."
+          },
+          "typing.send": {
+            "type": "object",
+            "description": "Show that the account is typing."
+          },
+          "threads.read": {
+            "type": "object",
+            "description": "Read a thread under a message. A thread is not a room; a room is the conversation."
+          },
+          "attachments.read": {
+            "type": "object",
+            "description": "Download the files messages carry."
+          },
+          "attachments.send": {
+            "type": "object",
+            "required": [
+              "maxBytes",
+              "caption"
+            ],
+            "description": "Send a file.",
+            "properties": {
+              "maxBytes": {
+                "$ref": "#/components/schemas/PositiveInteger",
+                "description": "Largest file the messenger accepts from this account."
+              },
+              "caption": {
+                "type": "boolean",
+                "description": "Whether a file can carry text with it."
+              }
+            }
+          }
+        },
+        "patternProperties": {
+          "^x-[a-z][a-z0-9-]*\\.": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
