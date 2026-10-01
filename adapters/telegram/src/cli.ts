@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { proxyTransportFromUrl, TelegramClient } from "@mtcute/bun";
+import { type Capabilities, serve } from "@tsuba/serve-kit";
+import adapterPackage from "../package.json";
 
 /**
  * The spike from docs/telegram.md: can mtcute on Bun sign a person in, list
@@ -12,6 +14,7 @@ import { proxyTransportFromUrl, TelegramClient } from "@mtcute/bun";
  *   bun adapters/telegram/src/cli.ts login
  *   bun adapters/telegram/src/cli.ts spike [seconds-to-wait-for-a-message]
  *   bun adapters/telegram/src/cli.ts measure-length
+ *   bun adapters/telegram/src/cli.ts serve
  */
 
 const SESSION = fileURLToPath(
@@ -109,13 +112,40 @@ async function measureLength(tg: TelegramClient) {
   }
 }
 
+// Only what this adapter performs end to end is declared. Nothing is yet:
+// rooms, reads, the stream and sending arrive with contract 0.2.0.
+const CAPABILITIES: Capabilities = {
+  provider: { id: "telegram", name: "Telegram" },
+  account: { kind: "user" },
+  adapter: { name: "tsuba-telegram", version: adapterPackage.version },
+  features: {},
+};
+
+async function serveForever(tg: TelegramClient) {
+  await signedIn(tg);
+  const server = serve({
+    token: required("TSUBA_TOKEN"),
+    port: Number(process.env.TSUBA_PORT ?? 8790),
+    hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
+    capabilities: CAPABILITIES,
+  });
+  console.log(`tsuba-telegram listening on ${server.hostname}:${server.port}`);
+  await new Promise<void>((resolve) => {
+    process.once("SIGINT", resolve);
+    process.once("SIGTERM", resolve);
+  });
+  await server.stop(true);
+}
+
 const [command, argument] = process.argv.slice(2);
 const tg = createClient();
 try {
   if (command === "login") await login(tg);
   else if (command === "spike") await spike(tg, Number(argument ?? 120));
   else if (command === "measure-length") await measureLength(tg);
-  else console.log("commands: login | spike [seconds] | measure-length");
+  else if (command === "serve") await serveForever(tg);
+  else
+    console.log("commands: login | spike [seconds] | measure-length | serve");
 } finally {
   await tg.destroy();
 }

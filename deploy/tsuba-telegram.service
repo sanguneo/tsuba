@@ -1,0 +1,21 @@
+[Unit]
+Description=tsuba Telegram adapter (127.0.0.1:8790)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tsuba
+ExecStart=/home/ubuntu/.bun-tsuba/bin/bun adapters/telegram/src/cli.ts serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/tsuba/sessions
+
+[Install]
+WantedBy=multi-user.target
