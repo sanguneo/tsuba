@@ -98,6 +98,17 @@ bun adapters/discord/src/cli.ts serve   # 127.0.0.1:8792
 - HTTP 토큰은 `TSUBA_DISCORD_HTTP_TOKEN`(없으면 `TSUBA_TOKEN`), 포트 `TSUBA_DISCORD_PORT`(기본
   8792), 주소 `TSUBA_HOST`. Telegram 어댑터(8790)와 같은 저장소·같은 `.env` 에서 나란히 돌 수 있습니다.
 
+## 남은 일 (2026-10-01)
+
+- [x] 앱 `tsuba` 와 봇 사용자 생성, **Message Content Intent** 켬.
+- [ ] 봇을 넣을 서버 마련: 개인 서버를 만들거나 관리 권한이 있는 서버를 구함.
+- [ ] 토큰 초기화 → VPS `~/tsuba/.env` 의 `TSUBA_DISCORD_TOKEN` (권한 600).
+- [ ] 초대: `https://discord.com/oauth2/authorize?client_id=1555082348641390742&scope=bot&permissions=68672`
+      (채널 보기, 메시지 보내기, 메시지 기록 보기, 반응 추가).
+- [ ] `bun adapters/discord/src/cli.ts check` 로 서버·방 개수 확인 → `serve` (8792),
+      `tailscale serve --https=8792`, saya `.env` 에 `SAYA_ADAPTERS=telegram,discord`.
+- [ ] (선택) 공개 봇 끄기: 설치 탭의 설치 링크를 "없음"으로 저장한 뒤 봇 탭에서 끔.
+
 ## 하지 않는 것
 
 사람 계정 자동화(셀프봇), 봇이 볼 수 없는 채널의 기록 수집, 대량 발송.
