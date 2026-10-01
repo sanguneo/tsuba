@@ -187,11 +187,11 @@ export function slackBackend(
       ...mentionedUsers(text),
       ...(message.user ? [message.user] : []),
     ]);
-    // Bot icons are not carried by this adapter's message shape; no extra calls.
-    const address =
-      message.user && !message.bot_id
-        ? (await displayUser(message.user))?.profile?.image_72
-        : undefined;
+    // An app's message that names its bot user shows that user's picture, as
+    // Slack does; a message with only a bot_id has none here (no extra calls).
+    const address = message.user
+      ? (await displayUser(message.user))?.profile?.image_72
+      : undefined;
     const senderAvatar =
       typeof address === "string" && avatarUrl(address) && message.user
         ? `avatar:${message.user}:${avatarHash(address)}`

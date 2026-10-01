@@ -61,6 +61,12 @@ function fixture(text = "Synthetic") {
             username: "Synthetic bot",
             text: "Synthetic bot",
           },
+          {
+            ts: "1699999999.000001",
+            user: USER,
+            bot_id: "B000000002",
+            text: "Synthetic app",
+          },
         ],
       });
     return mediaAnswer();
@@ -102,14 +108,15 @@ function fixture(text = "Synthetic") {
   };
 }
 
-test("Slack sender avatars share the name lookup, are opaque and URL-versioned; bot avatars are omitted", async () => {
+test("Slack sender avatars share the name lookup, are opaque and URL-versioned; only a bare bot_id has none", async () => {
   const f = fixture();
   try {
     const result = await f.read();
     const messages = result.messages.filter(
       (message) => message.senderId === USER,
     );
-    expect(messages).toHaveLength(2);
+    // Two from the person, one from an app posting as its bot user.
+    expect(messages).toHaveLength(3);
     for (const message of messages) {
       expect(schema("Message")(message)).toBe(true);
       expect(message.senderAvatar).toBe(idFor(ADDRESS));
@@ -300,7 +307,7 @@ for (const [answer, code] of [
     );
     try {
       const result = await f.read();
-      expect(result.messages).toHaveLength(3);
+      expect(result.messages).toHaveLength(4);
       for (const message of result.messages.filter(
         (message) => message.senderId === USER,
       )) {

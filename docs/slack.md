@@ -70,7 +70,8 @@ Web API 는 HTTPS 폼 요청이고 Socket Mode 는 WebSocket 하나라서 Bun �
 [`users.list` 예시](https://docs.slack.dev/reference/methods/users.list/), 공식 Python SDK 의
 [`rtm.start.json` 프로필 예시](https://github.com/slackapi/python-slack-sdk/blob/main/tests/slack_sdk_fixture/rtm.start.json).
 사용자 정보는 10분 캐시하지만 사진 요청은 새로 확인합니다. URL 이 바뀐 옛 id 는 `404 NOT_FOUND` 입니다.
-사진이 없거나 허용 URL 이 아니면 필드를 생략하며, 봇 아이콘은 현재 메시지 입력에 없어 추가 조회하지 않습니다.
+사진이 없거나 허용 URL 이 아니면 필드를 생략합니다. 앱이 봇 사용자(`user`)로 올린 글은 그 사용자의 사진을 쓰고,
+`bot_id` 만 있는 글은 추가 조회 없이 사진을 생략합니다.
 
 ## 이벤트
 
