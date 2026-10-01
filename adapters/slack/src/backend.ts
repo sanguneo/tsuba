@@ -34,6 +34,8 @@ const ROOM_LIMIT = 500;
  * history at 40 a minute and leaves room for reads.
  */
 const INFO_INTERVAL_MS = 3000;
+/** How long to wait after Slack says to slow down before filling again. */
+const RATE_LIMIT_PAUSE_MS = 30_000;
 /** Unread messages counted past `last_read`, as many as one page holds. */
 const UNREAD_PAGE = 100;
 
@@ -92,11 +94,12 @@ export function slackBackend(
   },
   fetcher: typeof fetch = fetch,
   userToken = "",
-  options: { fillIntervalMs?: number } = {},
+  options: { fillIntervalMs?: number; rateLimitPauseMs?: number } = {},
 ): AdapterBackend & { stop(): void } {
   const users = new Map<string, Promise<SlackUser | undefined>>();
   const info = new Map<string, SlackConversationInfo>();
   const stale = new Set<string>();
+  const failed = new Set<string>();
   let known: Conversation[] = [];
   let worker: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
@@ -167,7 +170,9 @@ export function slackBackend(
   // Fill unread counts and latest activity a room at a time, under Slack's rate.
   function schedule() {
     if (stopped || worker) return;
-    const next = [...stale][0] ?? known.find((room) => !info.has(room.id))?.id;
+    const next =
+      [...stale][0] ??
+      known.find((room) => !info.has(room.id) && !failed.has(room.id))?.id;
     if (!next) return;
     worker = setTimeout(async () => {
       worker = undefined;
@@ -223,8 +228,21 @@ export function slackBackend(
               }
             : {}),
         });
-      } catch {
-        info.set(next, info.get(next) ?? {});
+      } catch (error) {
+        // Asked to slow down: try this room again after a pause. Any other
+        // failure leaves the room unfilled and moves on; it is tried again on
+        // its next event or the next pass.
+        const limited =
+          error instanceof AdapterError && error.code === "RATE_LIMITED";
+        if (limited) stale.add(next);
+        else failed.add(next);
+        if (limited) {
+          worker = setTimeout(() => {
+            worker = undefined;
+            schedule();
+          }, options.rateLimitPauseMs ?? RATE_LIMIT_PAUSE_MS);
+          return;
+        }
       }
       schedule();
     }, options.fillIntervalMs ?? INFO_INTERVAL_MS);
@@ -257,6 +275,7 @@ export function slackBackend(
     const item = event.item as { channel?: string } | undefined;
     const room = channel ?? item?.channel;
     if (room) {
+      failed.delete(room);
       stale.add(room);
       schedule();
     }
@@ -288,6 +307,7 @@ export function slackBackend(
         cursor = page.response_metadata?.next_cursor || undefined;
       } while (cursor && found.length <= ROOM_LIMIT);
       known = found;
+      failed.clear();
       schedule();
       const rooms: Room[] = await Promise.all(
         found.slice(0, ROOM_LIMIT).map(async (conversation) => {
