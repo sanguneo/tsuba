@@ -1,5 +1,11 @@
 import { serve } from "@tsuba/serve-kit";
-import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  Options,
+  Partials,
+} from "discord.js";
 import { discordBackend } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
@@ -31,6 +37,13 @@ function createClient(): Client {
     partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     // Never resend a request whose outcome is unknown.
     rest: { retries: 0 },
+    // No message cache: discord.js merges a fetched message into a cached one
+    // without dropping reactions Discord no longer has, so every read is built
+    // from Discord's own answer instead.
+    makeCache: Options.cacheWithLimits({
+      ...Options.DefaultMakeCacheSettings,
+      MessageManager: 0,
+    }),
   });
 }
 
