@@ -1,0 +1,10 @@
+{
+  "name": "@tsuba/telegram",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mtcute/bun": "0.32.3",
+    "@tsuba/serve-kit": "workspace:*"
+  }
+}

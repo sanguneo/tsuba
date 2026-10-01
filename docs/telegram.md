@@ -30,6 +30,11 @@ bun adapters/telegram/src/cli.ts serve --port 8790
 - 로그인은 사람이 하는 것입니다. 코드를 자동으로 받아 넣는 로그인 자동화는 만들지
   않습니다.
 - HTTP 토큰은 `TSUBA_TOKEN`(16자 이상), 기본 바인딩은 `127.0.0.1` 입니다(serve-kit).
+- Telegram 이 막힌 네트워크에서는 `TSUBA_TELEGRAM_PROXY` 로 프록시를 지정합니다
+  (`socks5://`, `http://`, `tg://proxy` MTProxy 링크; mtcute `proxyTransportFromUrl`).
+  2026-10-01 개발 PC 에서 확인: 직접 연결로는 Telegram DC 와 `*.telegram.org` 가 모두
+  시간 초과였고(일반 TCP·난독화 TCP·WebSocket 모두), `ssh -D` SOCKS5 를 거치면 인증 키
+  교환과 `help.getNearestDc` 가 성공했습니다. 템플릿은 `.env.example` 입니다.
 
 ## 기능 신고 초안
 

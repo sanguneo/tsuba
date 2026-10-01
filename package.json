@@ -5,10 +5,11 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "adapters/*"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram",
     "lint": "biome check .",
     "test": "bun test"
   },
