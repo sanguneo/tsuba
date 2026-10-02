@@ -1,4 +1,9 @@
-# 鍔 tsuba
+![つば (tsuba)](assets/tsuba-og.png)
+
+# つば (tsuba)
+
+> *Many messengers, one guard.*
+> ひとつに、つなぐ。
 
 메신저 어댑터 모음입니다. 어댑터마다 메신저 계정 하나를 쥐고 로컬 프로세스로 돌며,
 모두 같은 HTTP + SSE 계약(`contract/openapi.json`)으로 답합니다. 웹 클라이언트
