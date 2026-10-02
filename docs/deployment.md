@@ -68,6 +68,7 @@ journalctl -u tsuba@slack -f                 # 로그
 | VPS 에서 도는 saya (리버스 프록시) | `http://127.0.0.1:8790` |
 | PC 에서 도는 saya | `http://127.0.0.1:18790` — PC 의 `proxylauncher.ps1` 이 `ssh -L 127.0.0.1:18790:127.0.0.1:8790` 을 유지 |
 | tailnet 의 아무 기기 | `https://oci.tailcbc039.ts.net/telegram`, `/slack`, `/discord` — VPS 의 `tailscale serve` 가 주소 하나에서 경로로 나눔 (tailnet 전용, Funnel 아님) |
+| VPS 에서 도는 saya | `https://oci.tailcbc039.ts.net/` — 같은 주소의 `/` 경로. saya 의 프록시(Caddy, `127.0.0.1:8796`)가 어댑터에는 loopback 으로 붙고 카카오 코어에는 PC 의 `tailscale serve --https=8765` 로 붙음 (2026-10-02, 절차는 saya `docs/deployment.md`) |
 | PC 에서 직접 띄운 tsuba | `http://127.0.0.1:8790` |
 
 Tailscale 경로는 어댑터를 loopback 에 둔 채 tailscaled 가 tailnet 에서만 HTTPS 로 받아
@@ -79,6 +80,7 @@ Tailscale 경로는 어댑터를 loopback 에 둔 채 tailscaled 가 tailnet 에
 sudo tailscale serve --bg --https=443 --set-path /telegram http://127.0.0.1:8790
 sudo tailscale serve --bg --https=443 --set-path /discord  http://127.0.0.1:8792
 sudo tailscale serve --bg --https=443 --set-path /slack    http://127.0.0.1:8793
+sudo tailscale serve --bg --https=443 --set-path /        http://127.0.0.1:8796   # saya
 sudo tailscale serve status                                      # 확인
 sudo tailscale serve --https=443 --set-path /slack off           # 하나 끄기
 ```
