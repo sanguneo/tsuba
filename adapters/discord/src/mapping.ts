@@ -16,9 +16,26 @@ export interface DiscordChannelLike {
   type: number;
   name: string;
   guildName: string;
+  /** Set on a thread: the name of the standard text channel it hangs from. */
+  parentName?: string;
+  /** Where Discord's own sidebar draws the room; given, it goes out as `x-discord.place`. */
+  place?: DiscordPlace;
   lastMessageId?: string | null;
   lastMessage?: Pick<DiscordMessageLike, "content" | "fromMe"> | null;
   permissions: DiscordPermissions;
+}
+
+/**
+ * The sidebar position of a room: its server, the category over its channel
+ * (absent for a channel outside every category), the channel itself (for a
+ * thread, the channel it hangs from) with Discord's raw position, and the
+ * thread when the room is one. Sent as the `x-discord.place` extension key.
+ */
+export interface DiscordPlace {
+  guild: { id: string; name: string };
+  category?: { id: string; name: string; position: number };
+  channel: { id: string; name: string; position: number };
+  thread?: { id: string; name: string };
 }
 
 export interface DiscordAttachmentLike {
@@ -61,6 +78,8 @@ export interface DiscordMessageLike {
 
 const DISCORD_EPOCH = 1_420_070_400_000n;
 const GUILD_TEXT = 0;
+/** Public and private threads; announcement threads (10) hang from channels that are not rooms. */
+const THREAD_TYPES = new Set([11, 12]);
 /** Default, reply, and the replies to slash and context-menu commands: what people write. */
 const CONVERSATION_TYPES = new Set([0, 19, 20, 23]);
 
@@ -73,8 +92,10 @@ export function snowflakeTime(id: string): string | undefined {
 }
 
 export function mapDiscordRoom(channel: DiscordChannelLike): Room | null {
+  const thread =
+    THREAD_TYPES.has(channel.type) && channel.parentName !== undefined;
   if (
-    channel.type !== GUILD_TEXT ||
+    (channel.type !== GUILD_TEXT && !thread) ||
     !channel.permissions.view ||
     !channel.permissions.readHistory
   )
@@ -85,7 +106,9 @@ export function mapDiscordRoom(channel: DiscordChannelLike): Room | null {
     : undefined;
   return {
     id: channel.id,
-    title: `${channel.guildName} · #${channel.name}`,
+    title: thread
+      ? `${channel.guildName} · #${channel.parentName} › ${channel.name}`
+      : `${channel.guildName} · #${channel.name}`,
     kind: "group",
     // Discord bots have no per-user unread marker or count.
     unread: 0,
@@ -101,6 +124,7 @@ export function mapDiscordRoom(channel: DiscordChannelLike): Room | null {
     ...(!channel.permissions.send
       ? { features: { "messages.send": false as const } }
       : {}),
+    ...(channel.place ? { "x-discord.place": channel.place } : {}),
   };
 }
 

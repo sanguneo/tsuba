@@ -7,6 +7,7 @@ import {
   type StreamUpdate,
 } from "@tsuba/serve-kit";
 import {
+  type AnyThreadChannel,
   ChannelType,
   type Client,
   type Attachment as DiscordAttachment,
@@ -24,11 +25,13 @@ import {
 } from "discord.js";
 import {
   type DiscordMessageLike,
+  type DiscordPlace,
   mapDiscordMessage,
   mapDiscordReaction,
   mapDiscordRoom,
   reactionPlan,
 } from "./mapping";
+import { RecentMessages } from "./recent-messages";
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
@@ -81,32 +84,82 @@ async function discord<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-function isText(channel: unknown): channel is TextChannel {
-  return Boolean(
-    channel &&
-      typeof channel === "object" &&
-      "type" in channel &&
-      channel.type === ChannelType.GuildText,
+/** A standard text channel, or a thread hanging from one. */
+type RoomChannel = TextChannel | AnyThreadChannel;
+
+function isThread(channel: RoomChannel): channel is AnyThreadChannel {
+  return (
+    channel.type === ChannelType.PublicThread ||
+    channel.type === ChannelType.PrivateThread
   );
+}
+
+function isText(channel: unknown): channel is RoomChannel {
+  if (!channel || typeof channel !== "object" || !("type" in channel))
+    return false;
+  if (channel.type === ChannelType.GuildText) return true;
+  if (
+    channel.type !== ChannelType.PublicThread &&
+    channel.type !== ChannelType.PrivateThread
+  )
+    return false;
+  const parent = (channel as AnyThreadChannel).parent;
+  return parent?.type === ChannelType.GuildText;
 }
 
 function permissions(channel: GuildTextBasedChannel, bot: User) {
   const value = channel.permissionsFor(bot);
+  const thread =
+    channel.type === ChannelType.PublicThread ||
+    channel.type === ChannelType.PrivateThread;
   return {
     view: value?.has(PermissionFlagsBits.ViewChannel) ?? false,
     readHistory: value?.has(PermissionFlagsBits.ReadMessageHistory) ?? false,
-    send: value?.has(PermissionFlagsBits.SendMessages) ?? false,
+    send:
+      value?.has(
+        thread
+          ? PermissionFlagsBits.SendMessagesInThreads
+          : PermissionFlagsBits.SendMessages,
+      ) ?? false,
     react: value?.has(PermissionFlagsBits.AddReactions) ?? false,
   };
 }
 
-function readable(channel: unknown, bot: User): channel is TextChannel {
+function readable(channel: unknown, bot: User): channel is RoomChannel {
   if (!isText(channel)) return false;
   const value = permissions(channel, bot);
   return value.view && value.readHistory;
 }
 
-function mapChannel(channel: TextChannel, bot: User): Room | null {
+/** Where Discord's sidebar draws the room: raw positions, as the client sorts by. */
+function place(channel: RoomChannel): { place: DiscordPlace } | undefined {
+  const thread = isThread(channel) ? channel : undefined;
+  const holder = thread ? thread.parent : channel;
+  if (!holder || holder.type !== ChannelType.GuildText) return undefined;
+  const category = holder.parent;
+  return {
+    place: {
+      guild: { id: channel.guild.id, name: channel.guild.name },
+      ...(category
+        ? {
+            category: {
+              id: category.id,
+              name: category.name,
+              position: category.rawPosition,
+            },
+          }
+        : {}),
+      channel: {
+        id: holder.id,
+        name: holder.name,
+        position: holder.rawPosition,
+      },
+      ...(thread ? { thread: { id: thread.id, name: thread.name } } : {}),
+    },
+  };
+}
+
+function mapChannel(channel: RoomChannel, bot: User): Room | null {
   const allowed = permissions(channel, bot);
   const cached = channel.lastMessageId
     ? channel.messages.cache.get(channel.lastMessageId)
@@ -116,6 +169,10 @@ function mapChannel(channel: TextChannel, bot: User): Room | null {
     type: channel.type,
     name: channel.name,
     guildName: channel.guild.name,
+    ...(isThread(channel) && channel.parent
+      ? { parentName: channel.parent.name }
+      : {}),
+    ...(place(channel) ?? {}),
     ...(channel.lastMessageId ? { lastMessageId: channel.lastMessageId } : {}),
     ...(cached
       ? {
@@ -201,8 +258,9 @@ function snowflake(value: string, what: string): Snowflake {
 /**
  * A Discord bot account behind the contract. Rooms are the standard text
  * channels of the servers the bot was added to, where it may view channels
- * and read history; announcement and forum channels, threads, voice text
- * chats and direct messages are not rooms. Discord keeps no read state for
+ * and read history; announcement and forum channels, voice text
+ * chats and direct messages are not rooms. Active threads of a standard text
+ * channel are rooms of their own. Discord keeps no read state for
  * bots, so unread counts are 0 and read marks are not offered.
  */
 export function discordBackend(
@@ -210,22 +268,54 @@ export function discordBackend(
   fetchMedia: typeof fetch = fetch,
 ): AdapterBackend {
   const bot = client.user;
+  const recent = new RecentMessages();
 
-  async function room(roomId: string): Promise<TextChannel> {
+  async function room(roomId: string): Promise<RoomChannel> {
     if (!SNOWFLAKE.test(roomId))
       throw new AdapterError("NOT_FOUND", "No such Discord channel");
     const channel = await discord(() => client.channels.fetch(roomId));
-    if (!readable(channel, bot))
+    if (!readable(channel, bot)) {
+      recent.delete(roomId);
       throw new AdapterError("NOT_FOUND", "No such Discord channel");
+    }
     return channel;
   }
 
-  function message(channel: TextChannel, id: string) {
+  function message(channel: RoomChannel, id: string) {
     const messageId = snowflake(id, "message");
     // Always ask Discord: the cache can trail a write this adapter just made.
     return discord(() =>
       channel.messages.fetch({ message: messageId, force: true }),
     );
+  }
+
+  async function readPage(
+    channel: RoomChannel,
+    limit: number,
+    before?: string,
+  ) {
+    const fetched = await discord(() =>
+      channel.messages.fetch({
+        limit,
+        ...(before === undefined
+          ? {}
+          : { before: snowflake(before, "message") }),
+      }),
+    );
+    const newestFirst = [...fetched.values()];
+    const oldest = newestFirst.at(-1);
+    const hasEarlier =
+      newestFirst.length === limit && oldest
+        ? (
+            await discord(() =>
+              channel.messages.fetch({ limit: 1, before: oldest.id }),
+            )
+          ).size > 0
+        : false;
+    return {
+      messages: newestFirst.reverse().map((item) => toMessage(item, bot)),
+      hasEarlier,
+    };
   }
 
   return {
@@ -236,7 +326,17 @@ export function discordBackend(
         for (const channel of guild.channels.cache.values()) {
           if (!readable(channel, bot)) continue;
           const mapped = mapChannel(channel, bot);
-          if (mapped) rooms.push(mapped);
+          if (mapped) {
+            const last = recent.latest(channel.id);
+            rooms.push(
+              last && last.id === channel.lastMessageId
+                ? {
+                    ...mapped,
+                    lastMessage: { text: last.text, fromMe: last.fromMe },
+                  }
+                : mapped,
+            );
+          }
         }
       rooms.sort((left, right) => {
         const a = left.lastActivityAt ? Date.parse(left.lastActivityAt) : 0;
@@ -252,33 +352,17 @@ export function discordBackend(
     async readMessages({ roomId, limit, before }) {
       const channel = await room(roomId);
       const page = Math.min(limit, 100);
-      const fetched = await discord(() =>
-        channel.messages.fetch({
-          limit: page,
-          ...(before === undefined
-            ? {}
-            : { before: snowflake(before, "message") }),
-        }),
-      );
-      const newestFirst = [...fetched.values()];
-      const oldest = newestFirst.at(-1);
-      // Probe before the oldest fetched id rather than trusting a full page.
-      const hasEarlier =
-        newestFirst.length === page && oldest
-          ? (
-              await discord(() =>
-                channel.messages.fetch({ limit: 1, before: oldest.id }),
-              )
-            ).size > 0
-          : false;
-      return {
-        messages: newestFirst.reverse().map((item) => toMessage(item, bot)),
-        hasEarlier,
-      };
+      // Historical pages never replace the recent window.
+      if (before !== undefined) return readPage(channel, page, before);
+      return recent.read(roomId, page, () => readPage(channel, 100));
     },
 
     async messagesAfter(roomId, afterId) {
       const channel = await room(roomId);
+      // The permanent gateway subscription keeps this suffix current. Gaps
+      // invalidate the window; an absent/deleted cursor still goes to REST.
+      const cached = recent.after(roomId, afterId);
+      if (cached !== undefined) return cached;
       // Refuse a cursor whose message is gone rather than starting from now.
       await message(channel, afterId);
       const result: Message[] = [];
@@ -298,10 +382,15 @@ export function discordBackend(
     },
 
     subscribe(listener: (update: StreamUpdate) => void) {
+      const notify = (update: StreamUpdate) => {
+        recent.apply(update);
+        listener(update);
+      };
+      const invalidate = () => recent.clear();
       const inRoom = (channel: unknown) => readable(channel, bot);
       const onCreate = (created: DiscordMessage) => {
         if (inRoom(created.channel))
-          listener({ event: "message", message: toMessage(created, bot) });
+          notify({ event: "message", message: toMessage(created, bot) });
       };
       const onUpdate = (
         _before: DiscordMessage | PartialMessage,
@@ -310,7 +399,7 @@ export function discordBackend(
         if (!inRoom(after.channel)) return;
         void (after.partial ? after.fetch() : Promise.resolve(after)).then(
           (full) =>
-            listener({
+            notify({
               event: "message.edited",
               message: toMessage(full, bot),
             }),
@@ -321,7 +410,7 @@ export function discordBackend(
       };
       const onDelete = (deleted: DiscordMessage | PartialMessage) => {
         if (inRoom(deleted.channel))
-          listener({
+          notify({
             event: "message.deleted",
             roomId: deleted.channelId,
             messageIds: [deleted.id],
@@ -332,7 +421,7 @@ export function discordBackend(
         channel: GuildTextBasedChannel,
       ) => {
         if (inRoom(channel) && deleted.size)
-          listener({
+          notify({
             event: "message.deleted",
             roomId: channel.id,
             messageIds: [...deleted.keys()],
@@ -345,7 +434,7 @@ export function discordBackend(
         // Ask again so the counts are Discord's, not a cache built up in pieces.
         void reaction.message.fetch(true).then(
           (full) =>
-            listener({
+            notify({
               event: "reactions.updated",
               roomId: full.channelId,
               messageId: full.id,
@@ -358,7 +447,7 @@ export function discordBackend(
       };
       const onReactionsCleared = (cleared: DiscordMessage | PartialMessage) => {
         if (inRoom(cleared.channel))
-          listener({
+          notify({
             event: "reactions.updated",
             roomId: cleared.channelId,
             messageId: cleared.id,
@@ -373,6 +462,8 @@ export function discordBackend(
       client.on(Events.MessageReactionRemove, onReaction);
       client.on(Events.MessageReactionRemoveEmoji, onReaction);
       client.on(Events.MessageReactionRemoveAll, onReactionsCleared);
+      client.on(Events.ShardDisconnect, invalidate);
+      client.on(Events.ShardResume, invalidate);
       return () => {
         client.off(Events.MessageCreate, onCreate);
         client.off(Events.MessageUpdate, onUpdate);
@@ -382,6 +473,8 @@ export function discordBackend(
         client.off(Events.MessageReactionRemove, onReaction);
         client.off(Events.MessageReactionRemoveEmoji, onReaction);
         client.off(Events.MessageReactionRemoveAll, onReactionsCleared);
+        client.off(Events.ShardDisconnect, invalidate);
+        client.off(Events.ShardResume, invalidate);
       };
     },
 
@@ -401,7 +494,9 @@ export function discordBackend(
               }),
         }),
       );
-      return toMessage(sent, bot);
+      const mapped = toMessage(sent, bot);
+      recent.apply({ event: "message", message: mapped });
+      return mapped;
     },
 
     async edit(roomId, messageId, text) {
@@ -418,13 +513,20 @@ export function discordBackend(
           allowedMentions: { parse: ["users"], repliedUser: true },
         }),
       );
-      return toMessage(edited, bot);
+      const mapped = toMessage(edited, bot);
+      recent.apply({ event: "message.edited", message: mapped });
+      return mapped;
     },
 
     async deleteMessage(roomId, messageId) {
       const channel = await room(roomId);
       const held = await message(channel, messageId);
       await discord(() => held.delete());
+      recent.apply({
+        event: "message.deleted",
+        roomId,
+        messageIds: [messageId],
+      });
     },
 
     async react(roomId, messageId, emojis) {
@@ -483,7 +585,14 @@ export function discordBackend(
           );
         throw apiError(error);
       }
-      return reactionsOf(await message(channel, messageId));
+      const reactions = reactionsOf(await message(channel, messageId));
+      recent.apply({
+        event: "reactions.updated",
+        roomId,
+        messageId,
+        reactions,
+      });
+      return reactions;
     },
 
     async media(id, signal) {
@@ -540,4 +649,25 @@ export function discordBackend(
       };
     },
   };
+}
+
+/** One startup reader; the SDK retains its per-route and global rate limits. */
+export async function warmRecentRooms(
+  backend: AdapterBackend,
+  signal: AbortSignal,
+): Promise<number> {
+  const rooms = (await backend.listRooms?.())?.rooms ?? [];
+  let warmed = 0;
+  for (const room of rooms.slice(0, 4)) {
+    if (signal.aborted) break;
+    try {
+      await backend.readMessages?.({ roomId: room.id, limit: 100 });
+      warmed++;
+    } catch (error) {
+      const failure = apiError(error);
+      console.warn(`Discord cache prefill failed: ${failure.code}`);
+      if (failure.code !== "NOT_FOUND" && failure.code !== "FORBIDDEN") break;
+    }
+  }
+  return warmed;
 }

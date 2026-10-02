@@ -64,6 +64,46 @@ test("only visible, readable standard guild text channels become rooms", () => {
   ).toEqual({ "messages.send": false });
 });
 
+test("a thread of a standard text channel is a room titled under its channel", () => {
+  const thread = {
+    ...channel,
+    name: "synthetic thread",
+    parentName: "general",
+  };
+  for (const type of [11, 12])
+    expect(mapDiscordRoom({ ...thread, type })?.title).toBe(
+      "Synthetic server · #general › synthetic thread",
+    );
+  expect(mapDiscordRoom({ ...thread, type: 10 })).toBeNull();
+  expect(
+    mapDiscordRoom({
+      ...thread,
+      type: 11,
+      permissions: { ...thread.permissions, send: false },
+    })?.features,
+  ).toEqual({ "messages.send": false });
+});
+
+test("a room's sidebar place goes out under x-discord.place and still fits the contract", () => {
+  const place = {
+    guild: { id: "111111111111111111", name: "Synthetic server" },
+    category: { id: "222222222222222222", name: "Talk", position: 3 },
+    channel: { id: channel.id, name: "general", position: 1 },
+    thread: { id: "333333333333333333", name: "synthetic thread" },
+  };
+  const room = mapDiscordRoom({
+    ...channel,
+    id: place.thread.id,
+    type: 11,
+    name: place.thread.name,
+    parentName: "general",
+    place,
+  });
+  expect(room).toHaveProperty(["x-discord.place"], place);
+  expect(schema("Room")(room)).toBe(true);
+  expect(mapDiscordRoom(channel)).not.toHaveProperty("x-discord.place");
+});
+
 test("a snowflake carries its time, as Discord documents; a malformed one carries none", () => {
   expect(snowflakeTime("175928847299117063")).toBe("2016-04-30T11:18:25.796Z");
   expect(snowflakeTime("not-a-snowflake")).toBeUndefined();

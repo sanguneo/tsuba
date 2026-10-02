@@ -6,7 +6,7 @@ import {
   Options,
   Partials,
 } from "discord.js";
-import { discordBackend } from "./backend";
+import { discordBackend, warmRecentRooms } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
 /**
@@ -37,9 +37,8 @@ function createClient(): Client {
     partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     // Never resend a request whose outcome is unknown.
     rest: { retries: 0 },
-    // No message cache: discord.js merges a fetched message into a cached one
-    // without dropping reactions Discord no longer has, so every read is built
-    // from Discord's own answer instead.
+    // Keep the SDK cache off: it merges removed reactions. The backend holds
+    // bounded mapped snapshots and replaces reaction lists instead.
     makeCache: Options.cacheWithLimits({
       ...Options.DefaultMakeCacheSettings,
       MessageManager: 0,
@@ -68,6 +67,10 @@ async function check(client: Client<true>) {
 }
 
 async function serveForever(client: Client<true>) {
+  const backend = discordBackend(client);
+  // Keep gateway updates flowing into the cache even with no SSE clients.
+  const unsubscribe = backend.subscribe?.(() => {});
+  const lifetime = new AbortController();
   const server = serve({
     token: process.env.TSUBA_DISCORD_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_DISCORD_PORT ?? 8792),
@@ -79,14 +82,20 @@ async function serveForever(client: Client<true>) {
       type: "image/svg+xml",
     },
     capabilities: CAPABILITIES,
-    backend: discordBackend(client),
+    backend,
   });
   console.log(`tsuba-discord listening on ${server.hostname}:${server.port}`);
+  const warming = warmRecentRooms(backend, lifetime.signal).then((count) =>
+    console.log("Discord cache prefilled rooms:", count),
+  );
   await new Promise<void>((resolve) => {
     process.once("SIGINT", resolve);
     process.once("SIGTERM", resolve);
   });
+  lifetime.abort();
+  unsubscribe?.();
   await server.stop(true);
+  await warming;
 }
 
 const [command] = process.argv.slice(2);
