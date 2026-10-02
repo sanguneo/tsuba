@@ -36,6 +36,11 @@ Discord 의 서버(길드)에는 채널이 여럿 있습니다. **일반 텍스�
 
 - 제목은 `서버 이름 · #채널 이름` 입니다. 서버가 여럿이면 `#general` 이 여러 개라서입니다.
   스레드는 `서버 이름 · #채널 이름 › 스레드 이름` 입니다.
+- 방마다 확장 키 `x-discord.place` 가 Discord 사이드바에서의 자리를 줍니다(`docs/contract.md`
+  "확장 이름공간", 모르는 클라이언트는 무시): `guild{id,name}`, 카테고리 밑이면
+  `category{id,name,position}`, `channel{id,name,position}`(스레드면 부모 채널), 스레드면
+  `thread{id,name}`. `position` 은 Discord 의 raw position 이고, 클라이언트는 position 다음
+  id 로 정렬하면 Discord 와 같은 순서가 됩니다. 스레드에는 position 이 없습니다.
 - `kind` 는 `group` 입니다. 봇에게 보내기 권한이 없으면 그 방은
   `"features": {"messages.send": false}`, 반응 권한이 없으면 `"reactions.send": false` 를 가집니다.
 - **안 읽음 수는 늘 0입니다.** Discord 는 봇의 읽음 상태를 두지 않습니다(봇은 ack 할 수 없음).

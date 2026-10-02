@@ -25,6 +25,7 @@ import {
 } from "discord.js";
 import {
   type DiscordMessageLike,
+  type DiscordPlace,
   mapDiscordMessage,
   mapDiscordReaction,
   mapDiscordRoom,
@@ -129,6 +130,34 @@ function readable(channel: unknown, bot: User): channel is RoomChannel {
   return value.view && value.readHistory;
 }
 
+/** Where Discord's sidebar draws the room: raw positions, as the client sorts by. */
+function place(channel: RoomChannel): { place: DiscordPlace } | undefined {
+  const thread = isThread(channel) ? channel : undefined;
+  const holder = thread ? thread.parent : channel;
+  if (!holder || holder.type !== ChannelType.GuildText) return undefined;
+  const category = holder.parent;
+  return {
+    place: {
+      guild: { id: channel.guild.id, name: channel.guild.name },
+      ...(category
+        ? {
+            category: {
+              id: category.id,
+              name: category.name,
+              position: category.rawPosition,
+            },
+          }
+        : {}),
+      channel: {
+        id: holder.id,
+        name: holder.name,
+        position: holder.rawPosition,
+      },
+      ...(thread ? { thread: { id: thread.id, name: thread.name } } : {}),
+    },
+  };
+}
+
 function mapChannel(channel: RoomChannel, bot: User): Room | null {
   const allowed = permissions(channel, bot);
   const cached = channel.lastMessageId
@@ -142,6 +171,7 @@ function mapChannel(channel: RoomChannel, bot: User): Room | null {
     ...(isThread(channel) && channel.parent
       ? { parentName: channel.parent.name }
       : {}),
+    ...(place(channel) ?? {}),
     ...(channel.lastMessageId ? { lastMessageId: channel.lastMessageId } : {}),
     ...(cached
       ? {

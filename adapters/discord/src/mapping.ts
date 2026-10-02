@@ -18,9 +18,24 @@ export interface DiscordChannelLike {
   guildName: string;
   /** Set on a thread: the name of the standard text channel it hangs from. */
   parentName?: string;
+  /** Where Discord's own sidebar draws the room; given, it goes out as `x-discord.place`. */
+  place?: DiscordPlace;
   lastMessageId?: string | null;
   lastMessage?: Pick<DiscordMessageLike, "content" | "fromMe"> | null;
   permissions: DiscordPermissions;
+}
+
+/**
+ * The sidebar position of a room: its server, the category over its channel
+ * (absent for a channel outside every category), the channel itself (for a
+ * thread, the channel it hangs from) with Discord's raw position, and the
+ * thread when the room is one. Sent as the `x-discord.place` extension key.
+ */
+export interface DiscordPlace {
+  guild: { id: string; name: string };
+  category?: { id: string; name: string; position: number };
+  channel: { id: string; name: string; position: number };
+  thread?: { id: string; name: string };
 }
 
 export interface DiscordAttachmentLike {
@@ -109,6 +124,7 @@ export function mapDiscordRoom(channel: DiscordChannelLike): Room | null {
     ...(!channel.permissions.send
       ? { features: { "messages.send": false as const } }
       : {}),
+    ...(channel.place ? { "x-discord.place": channel.place } : {}),
   };
 }
 
