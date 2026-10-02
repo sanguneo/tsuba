@@ -7,6 +7,7 @@ import {
   type StreamUpdate,
 } from "@tsuba/serve-kit";
 import {
+  type AnyThreadChannel,
   ChannelType,
   type Client,
   type Attachment as DiscordAttachment,
@@ -81,32 +82,54 @@ async function discord<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-function isText(channel: unknown): channel is TextChannel {
-  return Boolean(
-    channel &&
-      typeof channel === "object" &&
-      "type" in channel &&
-      channel.type === ChannelType.GuildText,
+/** A standard text channel, or a thread hanging from one. */
+type RoomChannel = TextChannel | AnyThreadChannel;
+
+function isThread(channel: RoomChannel): channel is AnyThreadChannel {
+  return (
+    channel.type === ChannelType.PublicThread ||
+    channel.type === ChannelType.PrivateThread
   );
+}
+
+function isText(channel: unknown): channel is RoomChannel {
+  if (!channel || typeof channel !== "object" || !("type" in channel))
+    return false;
+  if (channel.type === ChannelType.GuildText) return true;
+  if (
+    channel.type !== ChannelType.PublicThread &&
+    channel.type !== ChannelType.PrivateThread
+  )
+    return false;
+  const parent = (channel as AnyThreadChannel).parent;
+  return parent?.type === ChannelType.GuildText;
 }
 
 function permissions(channel: GuildTextBasedChannel, bot: User) {
   const value = channel.permissionsFor(bot);
+  const thread =
+    channel.type === ChannelType.PublicThread ||
+    channel.type === ChannelType.PrivateThread;
   return {
     view: value?.has(PermissionFlagsBits.ViewChannel) ?? false,
     readHistory: value?.has(PermissionFlagsBits.ReadMessageHistory) ?? false,
-    send: value?.has(PermissionFlagsBits.SendMessages) ?? false,
+    send:
+      value?.has(
+        thread
+          ? PermissionFlagsBits.SendMessagesInThreads
+          : PermissionFlagsBits.SendMessages,
+      ) ?? false,
     react: value?.has(PermissionFlagsBits.AddReactions) ?? false,
   };
 }
 
-function readable(channel: unknown, bot: User): channel is TextChannel {
+function readable(channel: unknown, bot: User): channel is RoomChannel {
   if (!isText(channel)) return false;
   const value = permissions(channel, bot);
   return value.view && value.readHistory;
 }
 
-function mapChannel(channel: TextChannel, bot: User): Room | null {
+function mapChannel(channel: RoomChannel, bot: User): Room | null {
   const allowed = permissions(channel, bot);
   const cached = channel.lastMessageId
     ? channel.messages.cache.get(channel.lastMessageId)
@@ -116,6 +139,9 @@ function mapChannel(channel: TextChannel, bot: User): Room | null {
     type: channel.type,
     name: channel.name,
     guildName: channel.guild.name,
+    ...(isThread(channel) && channel.parent
+      ? { parentName: channel.parent.name }
+      : {}),
     ...(channel.lastMessageId ? { lastMessageId: channel.lastMessageId } : {}),
     ...(cached
       ? {
@@ -201,8 +227,9 @@ function snowflake(value: string, what: string): Snowflake {
 /**
  * A Discord bot account behind the contract. Rooms are the standard text
  * channels of the servers the bot was added to, where it may view channels
- * and read history; announcement and forum channels, threads, voice text
- * chats and direct messages are not rooms. Discord keeps no read state for
+ * and read history; announcement and forum channels, voice text
+ * chats and direct messages are not rooms. Active threads of a standard text
+ * channel are rooms of their own. Discord keeps no read state for
  * bots, so unread counts are 0 and read marks are not offered.
  */
 export function discordBackend(
@@ -211,7 +238,7 @@ export function discordBackend(
 ): AdapterBackend {
   const bot = client.user;
 
-  async function room(roomId: string): Promise<TextChannel> {
+  async function room(roomId: string): Promise<RoomChannel> {
     if (!SNOWFLAKE.test(roomId))
       throw new AdapterError("NOT_FOUND", "No such Discord channel");
     const channel = await discord(() => client.channels.fetch(roomId));
@@ -220,7 +247,7 @@ export function discordBackend(
     return channel;
   }
 
-  function message(channel: TextChannel, id: string) {
+  function message(channel: RoomChannel, id: string) {
     const messageId = snowflake(id, "message");
     // Always ask Discord: the cache can trail a write this adapter just made.
     return discord(() =>
