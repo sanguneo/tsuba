@@ -31,6 +31,7 @@ import {
   mapDiscordRoom,
   reactionPlan,
 } from "./mapping";
+import { RecentMessages } from "./recent-messages";
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
@@ -267,13 +268,16 @@ export function discordBackend(
   fetchMedia: typeof fetch = fetch,
 ): AdapterBackend {
   const bot = client.user;
+  const recent = new RecentMessages();
 
   async function room(roomId: string): Promise<RoomChannel> {
     if (!SNOWFLAKE.test(roomId))
       throw new AdapterError("NOT_FOUND", "No such Discord channel");
     const channel = await discord(() => client.channels.fetch(roomId));
-    if (!readable(channel, bot))
+    if (!readable(channel, bot)) {
+      recent.delete(roomId);
       throw new AdapterError("NOT_FOUND", "No such Discord channel");
+    }
     return channel;
   }
 
@@ -285,6 +289,35 @@ export function discordBackend(
     );
   }
 
+  async function readPage(
+    channel: RoomChannel,
+    limit: number,
+    before?: string,
+  ) {
+    const fetched = await discord(() =>
+      channel.messages.fetch({
+        limit,
+        ...(before === undefined
+          ? {}
+          : { before: snowflake(before, "message") }),
+      }),
+    );
+    const newestFirst = [...fetched.values()];
+    const oldest = newestFirst.at(-1);
+    const hasEarlier =
+      newestFirst.length === limit && oldest
+        ? (
+            await discord(() =>
+              channel.messages.fetch({ limit: 1, before: oldest.id }),
+            )
+          ).size > 0
+        : false;
+    return {
+      messages: newestFirst.reverse().map((item) => toMessage(item, bot)),
+      hasEarlier,
+    };
+  }
+
   return {
     async listRooms() {
       const rooms: Room[] = [];
@@ -293,7 +326,17 @@ export function discordBackend(
         for (const channel of guild.channels.cache.values()) {
           if (!readable(channel, bot)) continue;
           const mapped = mapChannel(channel, bot);
-          if (mapped) rooms.push(mapped);
+          if (mapped) {
+            const last = recent.latest(channel.id);
+            rooms.push(
+              last && last.id === channel.lastMessageId
+                ? {
+                    ...mapped,
+                    lastMessage: { text: last.text, fromMe: last.fromMe },
+                  }
+                : mapped,
+            );
+          }
         }
       rooms.sort((left, right) => {
         const a = left.lastActivityAt ? Date.parse(left.lastActivityAt) : 0;
@@ -309,33 +352,17 @@ export function discordBackend(
     async readMessages({ roomId, limit, before }) {
       const channel = await room(roomId);
       const page = Math.min(limit, 100);
-      const fetched = await discord(() =>
-        channel.messages.fetch({
-          limit: page,
-          ...(before === undefined
-            ? {}
-            : { before: snowflake(before, "message") }),
-        }),
-      );
-      const newestFirst = [...fetched.values()];
-      const oldest = newestFirst.at(-1);
-      // Probe before the oldest fetched id rather than trusting a full page.
-      const hasEarlier =
-        newestFirst.length === page && oldest
-          ? (
-              await discord(() =>
-                channel.messages.fetch({ limit: 1, before: oldest.id }),
-              )
-            ).size > 0
-          : false;
-      return {
-        messages: newestFirst.reverse().map((item) => toMessage(item, bot)),
-        hasEarlier,
-      };
+      // Historical pages never replace the recent window.
+      if (before !== undefined) return readPage(channel, page, before);
+      return recent.read(roomId, page, () => readPage(channel, 100));
     },
 
     async messagesAfter(roomId, afterId) {
       const channel = await room(roomId);
+      // The permanent gateway subscription keeps this suffix current. Gaps
+      // invalidate the window; an absent/deleted cursor still goes to REST.
+      const cached = recent.after(roomId, afterId);
+      if (cached !== undefined) return cached;
       // Refuse a cursor whose message is gone rather than starting from now.
       await message(channel, afterId);
       const result: Message[] = [];
@@ -355,10 +382,15 @@ export function discordBackend(
     },
 
     subscribe(listener: (update: StreamUpdate) => void) {
+      const notify = (update: StreamUpdate) => {
+        recent.apply(update);
+        listener(update);
+      };
+      const invalidate = () => recent.clear();
       const inRoom = (channel: unknown) => readable(channel, bot);
       const onCreate = (created: DiscordMessage) => {
         if (inRoom(created.channel))
-          listener({ event: "message", message: toMessage(created, bot) });
+          notify({ event: "message", message: toMessage(created, bot) });
       };
       const onUpdate = (
         _before: DiscordMessage | PartialMessage,
@@ -367,7 +399,7 @@ export function discordBackend(
         if (!inRoom(after.channel)) return;
         void (after.partial ? after.fetch() : Promise.resolve(after)).then(
           (full) =>
-            listener({
+            notify({
               event: "message.edited",
               message: toMessage(full, bot),
             }),
@@ -378,7 +410,7 @@ export function discordBackend(
       };
       const onDelete = (deleted: DiscordMessage | PartialMessage) => {
         if (inRoom(deleted.channel))
-          listener({
+          notify({
             event: "message.deleted",
             roomId: deleted.channelId,
             messageIds: [deleted.id],
@@ -389,7 +421,7 @@ export function discordBackend(
         channel: GuildTextBasedChannel,
       ) => {
         if (inRoom(channel) && deleted.size)
-          listener({
+          notify({
             event: "message.deleted",
             roomId: channel.id,
             messageIds: [...deleted.keys()],
@@ -402,7 +434,7 @@ export function discordBackend(
         // Ask again so the counts are Discord's, not a cache built up in pieces.
         void reaction.message.fetch(true).then(
           (full) =>
-            listener({
+            notify({
               event: "reactions.updated",
               roomId: full.channelId,
               messageId: full.id,
@@ -415,7 +447,7 @@ export function discordBackend(
       };
       const onReactionsCleared = (cleared: DiscordMessage | PartialMessage) => {
         if (inRoom(cleared.channel))
-          listener({
+          notify({
             event: "reactions.updated",
             roomId: cleared.channelId,
             messageId: cleared.id,
@@ -430,6 +462,8 @@ export function discordBackend(
       client.on(Events.MessageReactionRemove, onReaction);
       client.on(Events.MessageReactionRemoveEmoji, onReaction);
       client.on(Events.MessageReactionRemoveAll, onReactionsCleared);
+      client.on(Events.ShardDisconnect, invalidate);
+      client.on(Events.ShardResume, invalidate);
       return () => {
         client.off(Events.MessageCreate, onCreate);
         client.off(Events.MessageUpdate, onUpdate);
@@ -439,6 +473,8 @@ export function discordBackend(
         client.off(Events.MessageReactionRemove, onReaction);
         client.off(Events.MessageReactionRemoveEmoji, onReaction);
         client.off(Events.MessageReactionRemoveAll, onReactionsCleared);
+        client.off(Events.ShardDisconnect, invalidate);
+        client.off(Events.ShardResume, invalidate);
       };
     },
 
@@ -458,7 +494,9 @@ export function discordBackend(
               }),
         }),
       );
-      return toMessage(sent, bot);
+      const mapped = toMessage(sent, bot);
+      recent.apply({ event: "message", message: mapped });
+      return mapped;
     },
 
     async edit(roomId, messageId, text) {
@@ -475,13 +513,20 @@ export function discordBackend(
           allowedMentions: { parse: ["users"], repliedUser: true },
         }),
       );
-      return toMessage(edited, bot);
+      const mapped = toMessage(edited, bot);
+      recent.apply({ event: "message.edited", message: mapped });
+      return mapped;
     },
 
     async deleteMessage(roomId, messageId) {
       const channel = await room(roomId);
       const held = await message(channel, messageId);
       await discord(() => held.delete());
+      recent.apply({
+        event: "message.deleted",
+        roomId,
+        messageIds: [messageId],
+      });
     },
 
     async react(roomId, messageId, emojis) {
@@ -540,7 +585,14 @@ export function discordBackend(
           );
         throw apiError(error);
       }
-      return reactionsOf(await message(channel, messageId));
+      const reactions = reactionsOf(await message(channel, messageId));
+      recent.apply({
+        event: "reactions.updated",
+        roomId,
+        messageId,
+        reactions,
+      });
+      return reactions;
     },
 
     async media(id, signal) {
@@ -597,4 +649,25 @@ export function discordBackend(
       };
     },
   };
+}
+
+/** One startup reader; the SDK retains its per-route and global rate limits. */
+export async function warmRecentRooms(
+  backend: AdapterBackend,
+  signal: AbortSignal,
+): Promise<number> {
+  const rooms = (await backend.listRooms?.())?.rooms ?? [];
+  let warmed = 0;
+  for (const room of rooms.slice(0, 4)) {
+    if (signal.aborted) break;
+    try {
+      await backend.readMessages?.({ roomId: room.id, limit: 100 });
+      warmed++;
+    } catch (error) {
+      const failure = apiError(error);
+      console.warn(`Discord cache prefill failed: ${failure.code}`);
+      if (failure.code !== "NOT_FOUND" && failure.code !== "FORBIDDEN") break;
+    }
+  }
+  return warmed;
 }

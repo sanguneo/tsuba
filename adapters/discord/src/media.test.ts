@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { createHandler } from "@tsuba/serve-kit";
 import { type Client, Collection } from "discord.js";
+import { bounded, deferred } from "../../../tests/harness/barriers";
 import { discordBackend } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
@@ -50,10 +52,12 @@ function setup(
         options.message ? rawMessage : new Collection([[MESSAGE, rawMessage]]),
     },
   };
-  const client = {
+  Object.defineProperty(rawMessage, "channel", { get: () => channel });
+  const events = new EventEmitter();
+  const client = Object.assign(events, {
     user: { id: "100000000000000006" },
     channels: { fetch: async () => channel },
-  } as unknown as Client<true>;
+  }) as unknown as Client<true>;
   const calls: { url: URL; options: RequestInit }[] = [];
   const fetchMedia: typeof fetch = Object.assign(
     async (input: string | URL | Request, options: RequestInit = {}) => {
@@ -63,14 +67,27 @@ function setup(
     },
     { preconnect() {} },
   );
+  const backend = discordBackend(client, fetchMedia);
   const handler = createHandler({
     token: "synthetic-test-token-0123456789",
     capabilities: CAPABILITIES,
-    backend: discordBackend(client, fetchMedia),
+    backend,
   });
   const get = (path: string) =>
     handler.handle(new Request(`http://adapter${path}`, { headers }));
-  return { get, calls, rawMessage };
+  const update = async () => {
+    const edited = deferred<void>();
+    const unsubscribe = backend.subscribe?.((event) => {
+      if (event.event === "message.edited") edited.resolve();
+    });
+    try {
+      events.emit("messageUpdate", rawMessage, rawMessage);
+      await bounded(edited.promise, "avatar update");
+    } finally {
+      unsubscribe?.();
+    }
+  };
+  return { get, calls, rawMessage, update };
 }
 
 function media(id: string) {
@@ -86,7 +103,7 @@ test("message avatars prefer the guild picture, fall back to user, omit defaults
     [null, HASH, `avatar:${GUILD}:${USER}:${HASH}`],
     [null, null, undefined],
   ] as const) {
-    const { get, rawMessage } = setup(picture, user, guild);
+    const { get, rawMessage, update } = setup(picture, user, guild);
     const response = await get(`/messages?roomId=${ROOM}&limit=2`);
     expect(response.status).toBe(200);
     const answer = await response.json();
@@ -95,6 +112,7 @@ test("message avatars prefer the guild picture, fall back to user, omit defaults
       expect(mapped).not.toHaveProperty("senderAvatar");
     else expect(mapped.senderAvatar).toBe(expected);
     rawMessage.member.avatar = NEXT_HASH;
+    await update();
     const changed = await (
       await get(`/messages?roomId=${ROOM}&limit=2`)
     ).json();
