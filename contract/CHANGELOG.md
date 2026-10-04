@@ -6,6 +6,20 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.7 — 2026-10-04
+
+Additive: a 0.2.6 client ignores the new key and offers any file, which an
+adapter declaring `types` refuses with `400` having sent nothing; a 0.2.7
+client offers any file to a 0.2.6 adapter, which declares none.
+
+### Added
+
+- **`attachments.send` `types`**: the only media types the adapter sends, as
+  lowercase `type/subtype` without parameters, so an adapter that sends
+  pictures only can say so. A file whose part carries another type is
+  `400 INVALID_REQUEST` and nothing is sent; absent means any type. A client
+  offers only these when a person picks a file.
+
 ## 0.2.6 — 2026-10-04
 
 Additive: `attachments.send` was reserved, so no 0.2.5 adapter declares it and

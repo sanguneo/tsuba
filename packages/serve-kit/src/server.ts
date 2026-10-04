@@ -548,6 +548,12 @@ export function createHandler(options: AdapterOptions) {
               "INVALID_REQUEST",
               `file must be 1 to ${feature.maxBytes} bytes`,
             );
+          const type = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+          if (feature.types && !feature.types.includes(type))
+            throw new AdapterError(
+              "INVALID_REQUEST",
+              `file must be ${feature.types.join(", ")}`,
+            );
           let caption: string | undefined;
           if (body.caption !== undefined) {
             const max = feature.caption ? (feature.captionMaxLength ?? 0) : 0;

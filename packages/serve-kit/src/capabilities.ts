@@ -25,6 +25,8 @@ export interface FeatureParams {
     maxBytes: number;
     caption: boolean;
     captionMaxLength?: number;
+    /** The only media types sent, lowercase `type/subtype`; absent means any. */
+    types?: string[];
     receipt: "accepted" | "stored";
   };
 }

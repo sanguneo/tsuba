@@ -155,6 +155,31 @@ test("a caption is refused where the adapter declares none", async () => {
   expect(sent).toHaveLength(0);
 });
 
+test("a type outside the declared types is refused and sends nothing", async () => {
+  const { handle, sent } = uploader({
+    ...uploads,
+    features: {
+      ...uploads.features,
+      "attachments.send": {
+        maxBytes: 16,
+        caption: false,
+        types: ["image/png", "image/jpeg"],
+        receipt: "stored",
+      },
+    },
+  });
+  const text = new File(["synthetic"], "a.txt", { type: "text/plain" });
+  const untyped = new File(["synthetic"], "a.bin");
+  for (const file of [text, untyped]) {
+    const body = await refused(await handle(post(form({ roomId: "r", file }))));
+    expect(body.error.message).toContain("image/png, image/jpeg");
+  }
+  expect(sent).toHaveLength(0);
+  const accepted = await handle(post(form({ roomId: "r", file: png() })));
+  expect(accepted.status).toBe(200);
+  expect(sent.map((item) => item.file.type)).toEqual(["image/png"]);
+});
+
 test("a declared length past the bound is refused before the body is read", async () => {
   const { handle } = uploader();
   let pulled = false;

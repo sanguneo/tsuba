@@ -642,3 +642,86 @@ test("malformed Gateway envelopes and dispatches close instead of emitting unche
     }
   });
 });
+
+function upload(parts: Record<string, string | File>) {
+  const body = new FormData();
+  for (const [name, value] of Object.entries(parts)) body.append(name, value);
+  return new Request("http://adapter/upload", {
+    method: "POST",
+    headers: { authorization: headers.authorization },
+    body,
+  });
+}
+const picture = () =>
+  new File([new Uint8Array([1, 2, 3])], "a.png", { type: "image/png" });
+
+test("an upload is one multipart message with caption, reply and file, answered as stored", async () => {
+  const { handle, calls } = setup(({ options }) =>
+    options.method === "POST"
+      ? json(
+          rawMessage(ID, {
+            author: rawUser,
+            content: "caption",
+            attachments: [
+              {
+                id: ATTACHMENT,
+                url: "https://cdn.discordapp.com/attachments/a.png",
+                filename: "a.png",
+                size: 3,
+                content_type: "image/png",
+              },
+            ],
+          }),
+        )
+      : json(rawMessage()),
+  );
+  const response = await handle(
+    upload({ roomId: ROOM, file: picture(), caption: "caption", replyTo: ID }),
+  );
+  expect(response.status).toBe(200);
+  const answer = (await response.json()) as {
+    message: { id: string; fromMe: boolean; attachments?: unknown[] };
+  };
+  expect(answer.message).toMatchObject({ id: ID, fromMe: true });
+  expect(answer.message.attachments).toHaveLength(1);
+  const sent = calls.filter(({ options }) => options.method === "POST");
+  expect(sent).toHaveLength(1);
+  const call = present(sent[0]);
+  expect(call.url.pathname).toBe(`/api/v9/channels/${ROOM}/messages`);
+  // fetch sets the multipart boundary itself; a fixed content type would break it.
+  expect(new Headers(call.options.headers).has("content-type")).toBe(false);
+  const form = call.options.body as FormData;
+  expect(JSON.parse(String(form.get("payload_json")))).toEqual({
+    content: "caption",
+    attachments: [{ id: 0, filename: "a.png" }],
+    allowed_mentions: { parse: ["users"], replied_user: true },
+    message_reference: { message_id: ID, fail_if_not_exists: true },
+  });
+  const file = form.get("files[0]") as File;
+  expect(file.name).toBe("a.png");
+  expect(file.type).toBe("image/png");
+  expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([1, 2, 3]);
+});
+
+test("Discord's refusals of a file keep their codes, and anything else is unknown", async () => {
+  for (const [status, expected, code] of [
+    [413, 400, "INVALID_REQUEST"],
+    [403, 403, "FORBIDDEN"],
+    [429, 429, "RATE_LIMITED"],
+    [502, 500, "INTERNAL"],
+  ] as const) {
+    const { handle } = setup(() => new Response(null, { status }));
+    await error(
+      await handle(upload({ roomId: ROOM, file: picture() })),
+      expected,
+      code,
+    );
+  }
+  const { handle, calls } = setup(() => json(rawMessage()));
+  await error(
+    await handle(upload({ roomId: "not-a-channel", file: picture() })),
+    404,
+    "NOT_FOUND",
+  );
+  expect(calls.some(({ options }) => options.method === "POST")).toBe(false);
+});

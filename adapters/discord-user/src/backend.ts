@@ -80,6 +80,11 @@ function apiError(error: unknown): AdapterError {
         "NOT_FOUND",
         "No such Discord channel, message or attachment",
       );
+    case 413:
+      return new AdapterError(
+        "INVALID_REQUEST",
+        "Discord refused the file as too large for this account",
+      );
     case 429:
       return new AdapterError(
         "RATE_LIMITED",
@@ -535,6 +540,39 @@ export function discordUserBackend(
                 },
               }),
         }),
+      });
+      return mapDiscordMessage(parseMessage(sent, user.id));
+    },
+    async upload(roomId, file, { caption, replyTo }) {
+      pathRoom(roomId);
+      if (replyTo !== undefined) pathMessage(replyTo);
+      const user = await getUser();
+      // One multipart message: the JSON part as for /send, then the file.
+      const body = new FormData();
+      body.append(
+        "payload_json",
+        JSON.stringify({
+          ...(caption === undefined ? {} : { content: caption }),
+          attachments: [{ id: 0, filename: file.name }],
+          allowed_mentions: { parse: ["users"], replied_user: true },
+          ...(replyTo === undefined
+            ? {}
+            : {
+                message_reference: {
+                  message_id: replyTo,
+                  fail_if_not_exists: true,
+                },
+              }),
+        }),
+      );
+      body.append(
+        "files[0]",
+        new Blob([file.bytes], { type: file.type }),
+        file.name,
+      );
+      const sent = await request(`/channels/${roomId}/messages`, {
+        method: "POST",
+        body,
       });
       return mapDiscordMessage(parseMessage(sent, user.id));
     },

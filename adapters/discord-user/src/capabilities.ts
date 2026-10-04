@@ -34,5 +34,14 @@ export const CAPABILITIES: Capabilities = {
     "read.mark": {},
     // Re-read signed URLs and fetch bytes only from Discord's HTTPS CDN.
     "attachments.read": {},
+    // An account without Nitro uploads at most 10 MiB per file, as a bot does
+    // in a server without boosts; the caption is the message text, so it has
+    // the same bound.
+    "attachments.send": {
+      maxBytes: 10 * 1024 * 1024,
+      caption: true,
+      captionMaxLength: MAX_TEXT,
+      receipt: "stored",
+    },
   },
 };
