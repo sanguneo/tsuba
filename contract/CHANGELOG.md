@@ -6,6 +6,24 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.6 — 2026-10-04
+
+Additive: `attachments.send` was reserved, so no 0.2.5 adapter declares it and
+a 0.2.5 client never sees it; a 0.2.6 client draws no file control for an
+adapter that does not declare it.
+
+### Added
+
+- **`POST /upload`** and the definition of **`attachments.send`**: one file
+  sent to a room as `multipart/form-data` (`roomId`, `file`, optionally
+  `caption` and `replyTo`). The feature declares `maxBytes` (the smaller of the
+  messenger's limit and the adapter's own), `caption`, `captionMaxLength` when
+  a caption is allowed, and `receipt` as for `messages.send`; it is no longer
+  reserved, and the parameters gained `captionMaxLength` and `receipt` on being
+  defined. Uploads share the adapter's one write line with `POST /send`, a
+  file past `maxBytes` is `400` (refused unread when the length says so), and
+  the answer is a `SendAnswer`. A room may narrow `attachments.send` to `false`.
+
 ## 0.2.5 — 2026-10-02
 
 Additive: a 0.2.4 client ignores the new route and key, and a 0.2.5 client

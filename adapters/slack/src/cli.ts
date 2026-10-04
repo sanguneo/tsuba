@@ -1,8 +1,8 @@
 import { serve } from "@tsuba/serve-kit";
 import entries from "emoji-datasource/emoji.json";
-import { slackApi } from "./api";
+import { slackApi, slackScopes } from "./api";
 import { slackBackend } from "./backend";
-import { CAPABILITIES } from "./capabilities";
+import { capabilities, UPLOAD_SCOPE } from "./capabilities";
 import { type EmojiEntry, emojiTable } from "./emoji";
 import { socketMode } from "./socket";
 
@@ -30,6 +30,8 @@ const identity = {
   ...(auth.user ? { handle: auth.user } : {}),
 };
 const emoji = emojiTable(entries as EmojiEntry[]);
+// Files are declared only when Slack granted the token the scope to upload them.
+const uploads = (await slackScopes(userToken)).has(UPLOAD_SCOPE);
 
 const listeners = new Set<(event: Record<string, unknown>) => void>();
 const live = {
@@ -44,6 +46,10 @@ const live = {
 const [command] = process.argv.slice(2);
 if (command === "check") {
   const backend = slackBackend(call, identity, emoji, live, fetch, userToken);
+  console.log(
+    "uploads:",
+    uploads ? "declared" : `not declared (no ${UPLOAD_SCOPE})`,
+  );
   const rooms = (await backend.listRooms?.())?.rooms ?? [];
   const direct = rooms.filter((room) => room.kind === "direct").length;
   console.log(
@@ -64,7 +70,9 @@ if (command === "check") {
       for (const listener of listeners) listener(event);
     },
   });
-  const backend = slackBackend(call, identity, emoji, live, fetch, userToken);
+  const backend = slackBackend(call, identity, emoji, live, fetch, userToken, {
+    uploads,
+  });
   const server = serve({
     token: process.env.TSUBA_SLACK_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_SLACK_PORT ?? 8793),
@@ -75,7 +83,7 @@ if (command === "check") {
       ),
       type: "image/svg+xml",
     },
-    capabilities: CAPABILITIES,
+    capabilities: capabilities(uploads),
     backend,
   });
   console.log(`tsuba-slack listening on ${server.hostname}:${server.port}`);

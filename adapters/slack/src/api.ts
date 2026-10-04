@@ -140,3 +140,20 @@ export function slackApi(
 }
 
 export const REACTION_NOOPS = IGNORED_ON_REACT;
+
+/** The scopes Slack granted a token, as `auth.test` lists them in `x-oauth-scopes`. */
+export async function slackScopes(
+  token: string,
+  fetcher: typeof fetch = fetch,
+): Promise<ReadonlySet<string>> {
+  const response = await fetcher(`${BASE}auth.test`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return new Set(
+    (response.headers.get("x-oauth-scopes") ?? "")
+      .split(",")
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  );
+}

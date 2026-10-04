@@ -4,6 +4,9 @@ import adapterPackage from "../package.json";
 
 // Measured on the user path: 4096 Unicode code points, not UTF-16 units.
 const MAX_TEXT = 4096;
+// Telegram takes up to 2 GB from a user, but the adapter holds an upload in
+// memory while it sends it, so 50 MB is the adapter's own bound.
+const MAX_UPLOAD = 50 * 1024 * 1024;
 
 /**
  * Declare only the features implemented end to end. The limits that differ by
@@ -18,6 +21,13 @@ export async function capabilities(tg: TelegramClient): Promise<Capabilities> {
     me.isPremium ? "reactions_user_max_premium" : "reactions_user_max_default",
     1,
   );
+  // 1024 for most accounts and 4096 for premium ones, read from the app config.
+  const caption = await tg.appConfig.getField(
+    me.isPremium
+      ? "caption_length_limit_premium"
+      : "caption_length_limit_default",
+    1024,
+  );
   return {
     provider: { id: "telegram", name: "Telegram" },
     account: { kind: "user" },
@@ -30,6 +40,12 @@ export async function capabilities(tg: TelegramClient): Promise<Capabilities> {
         events: ["message.edited", "message.deleted", "reactions.updated"],
       },
       "messages.send": { maxLength: MAX_TEXT, receipt: "stored" },
+      "attachments.send": {
+        maxBytes: MAX_UPLOAD,
+        caption: true,
+        captionMaxLength: caption,
+        receipt: "stored",
+      },
       "messages.reply": {},
       "messages.edit": {
         maxLength: MAX_TEXT,

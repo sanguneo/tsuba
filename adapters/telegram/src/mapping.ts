@@ -110,8 +110,26 @@ export function mapRoom(dialog: DialogLike): Room {
       : {}),
     ...(canSendText(dialog.peer)
       ? {}
-      : { features: { "messages.send": false } }),
+      : { features: { "messages.send": false, "attachments.send": false } }),
   };
+}
+
+/** Telegram's own bound on a photo; a larger picture goes as a file. */
+export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+/**
+ * How Telegram should show an uploaded file: pictures and MP4 video inline,
+ * GIFs as animations, and anything else as a document under its own name.
+ */
+export function uploadKind(
+  type: string,
+  size: number,
+): "photo" | "video" | "animation" | "document" {
+  if (PHOTO_TYPES.has(type) && size <= MAX_PHOTO_BYTES) return "photo";
+  if (type === "image/gif") return "animation";
+  if (type === "video/mp4") return "video";
+  return "document";
 }
 
 const ATTACHMENT_KINDS: Readonly<Record<string, Attachment["kind"]>> = {

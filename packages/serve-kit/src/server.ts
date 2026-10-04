@@ -55,6 +55,78 @@ async function jsonBody(request: Request): Promise<Body> {
   return input as Body;
 }
 
+/** What the parts around the file may add to an upload's body. */
+const UPLOAD_OVERHEAD = 64 * 1024;
+const UPLOAD_FIELDS = new Set(["roomId", "file", "caption", "replyTo"]);
+
+function tooLarge(maxBytes: number): AdapterError {
+  return new AdapterError(
+    "INVALID_REQUEST",
+    `The file is larger than ${maxBytes} bytes`,
+  );
+}
+
+/**
+ * An upload's form, read no further than `maxBytes` plus its parts' overhead.
+ * A declared length past that is refused unread; a body that runs past it
+ * without saying so is cut off at the bound, so nothing is held unbounded.
+ */
+async function formBody(request: Request, maxBytes: number): Promise<Body> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.split(";")[0]?.trim().toLowerCase() !== "multipart/form-data")
+    throw new AdapterError(
+      "INVALID_REQUEST",
+      "A multipart/form-data body is required",
+    );
+  const limit = maxBytes + UPLOAD_OVERHEAD;
+  const declared = request.headers.get("content-length");
+  if (declared !== null && Number(declared) > limit) throw tooLarge(maxBytes);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = request.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw tooLarge(maxBytes);
+    }
+    chunks.push(value);
+  }
+  const whole = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    whole.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const form = await new Response(whole, {
+    headers: { "content-type": contentType },
+  })
+    .formData()
+    .catch(() => undefined);
+  if (!form)
+    throw new AdapterError("INVALID_REQUEST", "The form could not be read");
+  const body: Body = {};
+  for (const [name, value] of form.entries()) {
+    if (!UPLOAD_FIELDS.has(name))
+      throw new AdapterError(
+        "INVALID_REQUEST",
+        "The form has a part the contract does not name",
+      );
+    if (Object.hasOwn(body, name))
+      throw new AdapterError("INVALID_REQUEST", `${name} was given twice`);
+    body[name] = value;
+  }
+  return body;
+}
+
+/** The last segment of a client's file name, never empty and never a path. */
+function fileName(name: string): string {
+  const base = name.split(/[\\/]/).pop()?.trim() ?? "";
+  return [...(base || "file")].slice(0, 255).join("");
+}
+
 function idField(body: Body, name: string): string {
   const value = body[name];
   if (typeof value !== "string" || !value)
@@ -107,6 +179,7 @@ export function createHandler(options: AdapterOptions) {
     ["messages.read", "readMessages"],
     ["messages.stream", "subscribe"],
     ["messages.send", "send"],
+    ["attachments.send", "upload"],
     ["messages.edit", "edit"],
     ["messages.delete", "deleteMessage"],
     ["reactions.send", "react"],
@@ -118,6 +191,11 @@ export function createHandler(options: AdapterOptions) {
         `${feature} must be declared iff ${method} is implemented`,
       );
   }
+  const upload = features["attachments.send"];
+  if (upload && upload.caption !== (upload.captionMaxLength !== undefined))
+    throw new Error(
+      "attachments.send declares captionMaxLength iff caption is true",
+    );
   for (const [feature, needs] of FEATURE_REQUIRES) {
     for (const need of needs)
       if (features[feature] && !features[need])
@@ -169,6 +247,10 @@ export function createHandler(options: AdapterOptions) {
       body: Body,
       feature: NonNullable<Features[K]>,
     ) => () => Promise<Response>,
+    read: (
+      request: Request,
+      feature: NonNullable<Features[K]>,
+    ) => Promise<Body> = jsonBody,
   ): (request: Request) => Promise<Response> {
     return async (request) => {
       const feature = features[id];
@@ -181,10 +263,8 @@ export function createHandler(options: AdapterOptions) {
         release = resolve;
       });
       try {
-        const perform = prepare(
-          await jsonBody(request),
-          feature as NonNullable<Features[K]>,
-        );
+        const declared = feature as NonNullable<Features[K]>;
+        const perform = prepare(await read(request, declared), declared);
         await previous;
         return await perform();
       } finally {
@@ -452,6 +532,63 @@ export function createHandler(options: AdapterOptions) {
             ),
           });
       }),
+    },
+    "/upload": {
+      method: "POST",
+      auth: true,
+      answer: write(
+        "attachments.send",
+        (body, feature) => {
+          const roomId = idField(body, "roomId");
+          const { file } = body;
+          if (!(file instanceof File))
+            throw new AdapterError("INVALID_REQUEST", "file must be one file");
+          if (file.size < 1 || file.size > feature.maxBytes)
+            throw new AdapterError(
+              "INVALID_REQUEST",
+              `file must be 1 to ${feature.maxBytes} bytes`,
+            );
+          let caption: string | undefined;
+          if (body.caption !== undefined) {
+            const max = feature.caption ? (feature.captionMaxLength ?? 0) : 0;
+            caption = body.caption as string;
+            if (
+              typeof caption !== "string" ||
+              !caption ||
+              [...caption].length > max
+            )
+              throw new AdapterError(
+                "INVALID_REQUEST",
+                feature.caption
+                  ? `caption must be 1 to ${max} code points`
+                  : "This adapter sends files without captions",
+              );
+          }
+          const replyTo =
+            body.replyTo === undefined ? undefined : idField(body, "replyTo");
+          if (replyTo !== undefined && !features["messages.reply"])
+            throw new AdapterError(
+              "NOT_SUPPORTED",
+              "Replies are not supported",
+            );
+          return async () =>
+            ok({
+              message: await backend.upload?.(
+                roomId,
+                {
+                  name: fileName(file.name),
+                  type: file.type || "application/octet-stream",
+                  bytes: new Uint8Array(await file.arrayBuffer()),
+                },
+                {
+                  ...(caption === undefined ? {} : { caption }),
+                  ...(replyTo === undefined ? {} : { replyTo }),
+                },
+              ),
+            });
+        },
+        (request, feature) => formBody(request, feature.maxBytes),
+      ),
     },
     "/edit": {
       method: "POST",

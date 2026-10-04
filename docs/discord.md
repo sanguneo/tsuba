@@ -118,7 +118,9 @@ Discord 의 서버(길드)에는 채널이 여럿 있습니다. **일반 텍스�
 3. **Reset Token** 으로 봇 토큰을 받아 `.env` 의 `TSUBA_DISCORD_TOKEN` 에 넣습니다. 이 토큰은 봇
    계정 전체 권한이라 비밀번호로 다룹니다.
 4. **OAuth2 → URL Generator** 에서 scope `bot`, 권한 *View Channels, Send Messages, Read Message
-   History, Add Reactions* 를 골라 만든 주소로 봇을 서버에 초대합니다. 봇이 각 방에서 실제로
+   History, Add Reactions, Attach Files* 를 골라 만든 주소로 봇을 서버에 초대합니다. *Attach Files* 가
+   없는 방은 `attachments.send: false` 로 좁혀 파일 보내기가 그려지지 않습니다(0.2.6, 한도는 부스트 없는
+   서버의 기본 10MiB). 봇이 각 방에서 실제로
    받는 역할/권한이 기준입니다. 숨긴 방은 목록에도 없습니다.
 
 ```sh

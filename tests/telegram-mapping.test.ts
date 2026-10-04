@@ -73,7 +73,9 @@ test("a room the account cannot post in narrows messages.send to false", () => {
     const room = mapRoom({ peer, unreadCount: 0 });
     expect(schema("Room")(room)).toBe(true);
     expect(room.features).toEqual(
-      expected ? undefined : { "messages.send": false },
+      expected
+        ? undefined
+        : { "messages.send": false, "attachments.send": false },
     );
   }
 });

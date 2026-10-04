@@ -163,7 +163,14 @@ export function mapSlackRoom(
           },
         }
       : {}),
-    ...(canSend ? {} : { features: { "messages.send": false as const } }),
+    ...(canSend
+      ? {}
+      : {
+          features: {
+            "messages.send": false as const,
+            "attachments.send": false as const,
+          },
+        }),
   };
 }
 

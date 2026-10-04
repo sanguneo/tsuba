@@ -172,6 +172,7 @@ test("auth precedes unsupported and unknown routes; every absent feature is 501"
       "/messages",
       "/rooms",
       "/send",
+      "/upload",
       "/stream",
       "/edit",
       "/delete",

@@ -6,6 +6,8 @@ import {
   type Reaction,
   type Room,
   type StreamUpdate,
+  type UploadFile,
+  type UploadOptions,
 } from "@tsuba/serve-kit";
 import { REACTION_NOOPS, type SlackCall, slackError } from "./api";
 import type { EmojiTable } from "./emoji";
@@ -67,6 +69,12 @@ const INFO_INTERVAL_MS = 3000;
 const RATE_LIMIT_PAUSE_MS = 30_000;
 /** Unread messages counted past `last_read`, as many as one page holds. */
 const UNREAD_PAGE = 100;
+/**
+ * Slack shares an uploaded file after files.completeUploadExternal answers;
+ * files.info is asked this often, this many times, for where it was shared.
+ */
+const SHARE_POLL_MS = 500;
+const SHARE_LOOKS = 20;
 
 interface SlackUser {
   id: string;
@@ -123,7 +131,13 @@ export function slackBackend(
   },
   fetcher: typeof fetch = fetch,
   userToken = "",
-  options: { fillIntervalMs?: number; rateLimitPauseMs?: number } = {},
+  options: {
+    fillIntervalMs?: number;
+    rateLimitPauseMs?: number;
+    /** Whether the token may upload (files:write); only then is `upload` given. */
+    uploads?: boolean;
+    sharePollMs?: number;
+  } = {},
 ): AdapterBackend & { stop(): void } {
   const users = new Map<
     string,
@@ -339,7 +353,100 @@ export function slackBackend(
     }
   });
 
+  async function replyAt(
+    roomId: string,
+    threadTs: string,
+    ts: string,
+  ): Promise<SlackMessageLike> {
+    const answer = await call<HistoryAnswer>("conversations.replies", {
+      channel: roomId,
+      ts: threadTs,
+      oldest: ts,
+      inclusive: true,
+      limit: 2,
+    });
+    const found = answer.messages?.find((message) => message.ts === ts);
+    if (!found)
+      throw new AdapterError("INTERNAL", "Slack did not show the shared file");
+    return found;
+  }
+
+  /** The message a file was shared in; Slack posts it after the upload completes. */
+  async function sharedMessage(
+    roomId: string,
+    fileId: string,
+    threadTs: string | undefined,
+  ): Promise<SlackMessageLike> {
+    for (let look = 0; look < SHARE_LOOKS; look++) {
+      const answer = await call<{
+        file?: { shares?: Record<string, Record<string, { ts?: string }[]>> };
+      }>("files.info", { file: fileId });
+      const shares = answer.file?.shares ?? {};
+      const ts = [
+        ...(shares.public?.[roomId] ?? []),
+        ...(shares.private?.[roomId] ?? []),
+      ].find((share) => share.ts)?.ts;
+      if (ts)
+        return threadTs ? replyAt(roomId, threadTs, ts) : messageAt(roomId, ts);
+      await Bun.sleep(options.sharePollMs ?? SHARE_POLL_MS);
+    }
+    throw new AdapterError(
+      "INTERNAL",
+      "Slack took the file but did not say where it was shared",
+    );
+  }
+
+  async function upload(
+    roomId: string,
+    file: UploadFile,
+    { caption, replyTo }: UploadOptions,
+  ): Promise<Message> {
+    const channel = conversationId(roomId);
+    let threadTs: string | undefined;
+    if (replyTo !== undefined) {
+      const parent = await messageAt(channel, timestamp(replyTo));
+      threadTs = parent.thread_ts ?? parent.ts;
+    }
+    const target = await call<{ upload_url?: string; file_id?: string }>(
+      "files.getUploadURLExternal",
+      { filename: file.name, length: file.bytes.byteLength },
+    );
+    // The address is Slack's own and pre-signed; it is used only on Slack's host.
+    const address =
+      target.upload_url && URL.canParse(target.upload_url)
+        ? new URL(target.upload_url)
+        : undefined;
+    if (
+      !target.file_id ||
+      !address ||
+      address.protocol !== "https:" ||
+      !FILE_HOSTS.has(address.hostname)
+    )
+      throw new AdapterError("INTERNAL", "Slack gave no usable upload address");
+    let taken: Response;
+    try {
+      taken = await fetcher(address, { method: "POST", body: file.bytes });
+    } catch {
+      throw new AdapterError("INTERNAL", "Slack could not be reached");
+    }
+    if (!taken.ok)
+      throw new AdapterError("INTERNAL", "Slack did not take the file");
+    await call("files.completeUploadExternal", {
+      files: JSON.stringify([{ id: target.file_id, title: file.name }]),
+      channel_id: channel,
+      ...(caption === undefined
+        ? {}
+        : { initial_comment: toSlackText(caption) }),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    });
+    return toMessage(
+      channel,
+      await sharedMessage(channel, target.file_id, threadTs),
+    );
+  }
+
   return {
+    ...(options.uploads ? { upload } : {}),
     stop() {
       stopped = true;
       clearTimeout(worker);

@@ -61,7 +61,7 @@ test("only visible, readable standard guild text channels become rooms", () => {
       ...channel,
       permissions: { ...channel.permissions, send: false },
     })?.features,
-  ).toEqual({ "messages.send": false });
+  ).toEqual({ "messages.send": false, "attachments.send": false });
 });
 
 test("a thread of a standard text channel is a room titled under its channel", () => {
@@ -81,7 +81,7 @@ test("a thread of a standard text channel is a room titled under its channel", (
       type: 11,
       permissions: { ...thread.permissions, send: false },
     })?.features,
-  ).toEqual({ "messages.send": false });
+  ).toEqual({ "messages.send": false, "attachments.send": false });
 });
 
 test("a room's sidebar place goes out under x-discord.place and still fits the contract", () => {

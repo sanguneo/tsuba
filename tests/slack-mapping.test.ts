@@ -98,7 +98,7 @@ test("rooms: DMs are direct, the rest are groups; unknown counts are 0 and a clo
     unread: 3,
     lastActivityAt: "2023-11-14T22:13:20.000Z",
     lastMessage: { text: "Synthetic", fromMe: true },
-    features: { "messages.send": false },
+    features: { "messages.send": false, "attachments.send": false },
   });
   expect(groupDmTitle("mpdm-synth-a--synth-b--self-1", "self")).toBe(
     "synth-a, synth-b",

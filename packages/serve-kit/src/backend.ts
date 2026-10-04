@@ -121,6 +121,18 @@ export interface SendOptions {
   replyTo?: string;
 }
 
+/** One file as the client sent it, read whole and no larger than the declared `maxBytes`. */
+export interface UploadFile {
+  name: string;
+  type: string;
+  bytes: Uint8Array<ArrayBuffer>;
+}
+
+export interface UploadOptions extends SendOptions {
+  /** Present only when the declaration says `caption: true`. */
+  caption?: string;
+}
+
 export interface ReadMessagesRequest {
   roomId: string;
   limit: number;
@@ -136,6 +148,11 @@ export interface AdapterBackend {
   messagesAfter?(roomId: string, afterId: string): Promise<Message[]>;
   subscribe?(listener: (update: StreamUpdate) => void): () => void;
   send?(roomId: string, text: string, options: SendOptions): Promise<Message>;
+  upload?(
+    roomId: string,
+    file: UploadFile,
+    options: UploadOptions,
+  ): Promise<Message>;
   edit?(roomId: string, messageId: string, text: string): Promise<Message>;
   deleteMessage?(roomId: string, messageId: string): Promise<void>;
   /** Sets this account's reactions on the message to exactly `emojis`. */

@@ -1,6 +1,7 @@
 import {
   type DeleteMessageUpdate,
   FileLocation,
+  InputMedia,
   MtPeerNotFoundError,
   type RawUpdateInfo,
   type TelegramClient,
@@ -21,6 +22,7 @@ import {
   type RawPeerLike,
   type RawReactionCountLike,
   rawReaction,
+  uploadKind,
 } from "./mapping";
 
 /** 400-coded refusals that mean "not allowed here" rather than "malformed". */
@@ -34,6 +36,11 @@ const FORBIDDEN = [
   "MESSAGE_EDIT_TIME_EXPIRED",
   "REACTION_INVALID",
   "REACTIONS_TOO_MANY",
+  "CHAT_SEND_MEDIA_FORBIDDEN",
+  "CHAT_SEND_PHOTOS_FORBIDDEN",
+  "CHAT_SEND_VIDEOS_FORBIDDEN",
+  "CHAT_SEND_DOCS_FORBIDDEN",
+  "CHAT_SEND_GIFS_FORBIDDEN",
 ];
 /** 400-coded refusals of the request itself; Telegram changed nothing. */
 const INVALID = [
@@ -42,6 +49,11 @@ const INVALID = [
   "MESSAGE_TOO_LONG",
   "REPLY_MESSAGE_ID_INVALID",
   "REPLY_TO_INVALID",
+  "MEDIA_CAPTION_TOO_LONG",
+  "MEDIA_EMPTY",
+  "PHOTO_INVALID_DIMENSIONS",
+  "PHOTO_EXT_INVALID",
+  "IMAGE_PROCESS_FAILED",
 ];
 /**
  * Telegram deletions outside channels and supergroups do not say which chat
@@ -258,6 +270,25 @@ export function telegramBackend(tg: TelegramClient): AdapterBackend {
           ),
         ),
       ),
+    upload: (roomId, file, { caption, replyTo }) =>
+      translated(async () => {
+        const params = { fileName: file.name, fileMime: file.type };
+        const kind = uploadKind(file.type, file.bytes.byteLength);
+        const media =
+          kind === "photo"
+            ? InputMedia.photo(file.bytes, params)
+            : kind === "video"
+              ? InputMedia.video(file.bytes, params)
+              : kind === "animation"
+                ? InputMedia.animation(file.bytes, params)
+                : InputMedia.document(file.bytes, params);
+        return mapped(
+          await tg.sendMedia(peerId(roomId), media, {
+            ...(caption === undefined ? {} : { caption }),
+            ...(replyTo === undefined ? {} : { replyTo: messageId(replyTo) }),
+          }),
+        );
+      }),
     edit: (roomId, id, text) =>
       translated(async () =>
         mapped(

@@ -68,7 +68,7 @@ function apiError(error: unknown): AdapterError {
       "RATE_LIMITED",
       "Discord asked the adapter to slow down",
     );
-  if (value.status === 400)
+  if (value.status === 400 || value.status === 413)
     return new AdapterError(
       "INVALID_REQUEST",
       "Discord refused the request as it was",
@@ -122,6 +122,7 @@ function permissions(channel: GuildTextBasedChannel, bot: User) {
           : PermissionFlagsBits.SendMessages,
       ) ?? false,
     react: value?.has(PermissionFlagsBits.AddReactions) ?? false,
+    attach: value?.has(PermissionFlagsBits.AttachFiles) ?? false,
   };
 }
 
@@ -486,6 +487,28 @@ export function discordBackend(
         channel.send({
           content: text,
           // Text from saya never pings @everyone, @here or a role.
+          allowedMentions: { parse: ["users"], repliedUser: true },
+          ...(reference === undefined
+            ? {}
+            : {
+                reply: { messageReference: reference, failIfNotExists: true },
+              }),
+        }),
+      );
+      const mapped = toMessage(sent, bot);
+      recent.apply({ event: "message", message: mapped });
+      return mapped;
+    },
+
+    async upload(roomId, file, { caption, replyTo }) {
+      const channel = await room(roomId);
+      const reference =
+        replyTo === undefined ? undefined : snowflake(replyTo, "message");
+      const sent = await discord(() =>
+        channel.send({
+          ...(caption === undefined ? {} : { content: caption }),
+          files: [{ attachment: Buffer.from(file.bytes), name: file.name }],
+          // A caption from saya never pings @everyone, @here or a role either.
           allowedMentions: { parse: ["users"], repliedUser: true },
           ...(reference === undefined
             ? {}

@@ -9,6 +9,8 @@ export interface DiscordPermissions {
   view: boolean;
   readHistory: boolean;
   send: boolean;
+  /** Attach Files; when it is not known, the room is not narrowed for it. */
+  attach?: boolean;
 }
 
 export interface DiscordChannelLike {
@@ -122,8 +124,15 @@ export function mapDiscordRoom(channel: DiscordChannelLike): Room | null {
         }
       : {}),
     ...(!channel.permissions.send
-      ? { features: { "messages.send": false as const } }
-      : {}),
+      ? {
+          features: {
+            "messages.send": false as const,
+            "attachments.send": false as const,
+          },
+        }
+      : channel.permissions.attach === false
+        ? { features: { "attachments.send": false as const } }
+        : {}),
     ...(channel.place ? { "x-discord.place": channel.place } : {}),
   };
 }

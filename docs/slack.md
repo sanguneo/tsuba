@@ -16,6 +16,12 @@ Web API 는 HTTPS 폼 요청이고 Socket Mode 는 WebSocket 하나라서 Bun �
 - 토큰은 늘 `Authorization` 헤더에만 싣고, 본문·주소·로그에 넣지 않습니다.
 - 쓰기는 한 번만 보냅니다. 429 와 Slack 이 밝힌 거절은 바뀐 것이 없다는 코드로, 그 밖은 `INTERNAL`
   (결과를 모름)입니다.
+- **파일 보내기(`attachments.send`, 0.2.6)는 사용자 토큰에 `files:write` 가 있을 때만 신고합니다.**
+  시작할 때 `auth.test` 의 `x-oauth-scopes` 를 읽어 정하고, `check` 가 `uploads:` 로 알려 줍니다. 없으면 앱의
+  User Token Scopes 에 `files:write` 를 더해 다시 설치하고 새 `xoxp-` 토큰을 넣습니다. 올리기는
+  `files.getUploadURLExternal` → `files.slack.com` 에 바이트 → `files.completeUploadExternal`(캡션은
+  `initial_comment`) 순서이고, Slack 이 공유를 조금 뒤에 올리므로 `files.info`(`files:read`)로
+  공유된 메시지를 찾아 답합니다(`receipt: stored`). 한도는 어댑터 메모리 기준 50MB입니다.
 - 2025년 Slack 의 기록 읽기 제한(분당 1회·15개)은 **마켓플레이스 밖으로 상용 배포하는 앱**에만
   적용됩니다. 자기 워크스페이스에만 설치하는 이 앱은 `conversations.history` Tier 3(분당 50+)입니다.
 

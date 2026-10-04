@@ -21,7 +21,12 @@ export interface FeatureParams {
   "threads.read": Record<string, never>;
   "attachments.read": Record<string, never>;
   "avatars.read": Record<string, never>;
-  "attachments.send": { maxBytes: number; caption: boolean };
+  "attachments.send": {
+    maxBytes: number;
+    caption: boolean;
+    captionMaxLength?: number;
+    receipt: "accepted" | "stored";
+  };
 }
 
 export type FeatureId = keyof FeatureParams;

@@ -20,6 +20,8 @@ export {
   type StreamPing,
   type StreamReady,
   type StreamUpdate,
+  type UploadFile,
+  type UploadOptions,
 } from "./backend";
 export {
   type Capabilities,

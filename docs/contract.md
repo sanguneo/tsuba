@@ -104,7 +104,7 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 | `read.mark` | 정의 (0.2.2) | `POST /read` | — |
 | `typing.send` | 예약 | `POST /typing` | — |
 | `threads.read` | 예약 | `GET /thread` | — |
-| `attachments.send` | 예약 | `POST /upload` | `maxBytes`, `caption` |
+| `attachments.send` | 정의 (0.2.6) | `POST /upload` (`multipart/form-data`: `roomId`, `file`, `caption?`, `replyTo?`). `/send` 와 같은 쓰기 줄 | `maxBytes`, `caption`, `captionMaxLength?`(`caption: true` 일 때만), `receipt` (`accepted`·`stored`) |
 
 ## 방별 기능 (`Room.features`)
 
