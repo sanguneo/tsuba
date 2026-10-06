@@ -12,6 +12,11 @@
 칼날(어댑터)과 칼집(saya) 사이의 날밑이라 tsuba 입니다. 카카오톡은 여기 없습니다 —
 데스크톱 클라이언트가 있는 기계에서 `kanao`/`kamado` 코어가 자기 계약으로 답합니다.
 
+> [!IMPORTANT]
+> **업그레이드 안내 (2026-10-06): saya 연결 방식이 바뀌었습니다.** saya 쪽에 어댑터 주소·토큰을 적지 않고, 어댑터가 `.env` 의 `SAYA_REGISTER_URL`·`SAYA_REGISTER_TOKEN` 으로 saya 에 스스로 등록합니다(아래 「saya에 붙이기」).
+> 기존 배포는 [업그레이드 가이드](https://github.com/sanguneo/saya/blob/main/docs/upgrade-registration.md)를 따라 옮기세요. 에이전트에게 그 문서를 주고 "이대로 옮겨 줘"라고
+> 하면 됩니다.
+
 ## 상태
 
 계약 0.2.5의 서버와 첫 어댑터를 구현했습니다.
@@ -38,6 +43,21 @@
 ```sh
 curl -H "Authorization: Bearer $TSUBA_TOKEN" http://127.0.0.1:8790/capabilities
 ```
+
+## saya에 붙이기
+
+**2026-10-06부터 saya 쪽에는 어댑터 설정이 없습니다.** 어댑터가 saya에 스스로 등록합니다(saya
+`docs/register.md`). serve-kit의 `serve()`가 하므로 어댑터마다 할 일은 `.env`의 두 줄입니다.
+
+```sh
+SAYA_REGISTER_URL=http://127.0.0.1:8798        # saya가 다른 기계면 https://<saya 기계>.<tailnet>.ts.net:8798
+SAYA_REGISTER_TOKEN=<saya의 SAYA_REGISTER_TOKEN>
+# SAYA_ADVERTISE_URL=https://<이 기계>.<tailnet>.ts.net:8790   # saya와 다른 기계일 때만
+```
+
+예전처럼 saya 의 env·Caddyfile 에 `SAYA_ADAPTER_<ID>_URL`/`_TOKEN` 과 어댑터 handle 을 적었다면
+지웁니다. 새 어댑터도 `serve()`를 쓰면 따로 할 일이 없습니다. 자세한 것은
+[`docs/deployment.md`](docs/deployment.md)의 「saya 에 등록하기」.
 
 ## 개발
 
