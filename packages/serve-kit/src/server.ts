@@ -23,6 +23,11 @@ import {
 import { failure, ok } from "./envelope";
 import { type ProviderIcon, prepareIcon } from "./icon";
 import { mediaHeaders } from "./media";
+import {
+  type Registration,
+  registrationFromEnv,
+  startRegistration,
+} from "./register";
 
 export interface AdapterOptions {
   token: string;
@@ -677,6 +682,11 @@ export function serve(
     hostname?: string;
     /** Bun's idle limit for ordinary requests, in seconds (Bun's default is 10). */
     idleTimeout?: number;
+    /**
+     * Registration with saya; by default from SAYA_REGISTER_URL and
+     * SAYA_REGISTER_TOKEN (register.ts), `false` to never register.
+     */
+    register?: Registration | false;
   },
 ) {
   const handler = createHandler(options);
@@ -694,9 +704,20 @@ export function serve(
       return handler.handle(request);
     },
   });
+  const registration =
+    options.register === false
+      ? undefined
+      : (options.register ??
+        registrationFromEnv(process.env, {
+          id: options.capabilities.provider.id,
+          port: server.port ?? options.port,
+          token: options.token,
+        }));
+  const registered = registration ? startRegistration(registration) : undefined;
   const stop = server.stop.bind(server);
-  server.stop = (closeActiveConnections?: boolean) => {
+  server.stop = async (closeActiveConnections?: boolean) => {
     handler.stop();
+    await registered?.stop();
     return stop(closeActiveConnections);
   };
   return server;
