@@ -41,4 +41,9 @@ export {
 export { type ErrorCode, failure, ok, STATUS } from "./envelope";
 export type { ProviderIcon } from "./icon";
 export { mediaHeaders } from "./media";
+export {
+  type Registration,
+  registrationFromEnv,
+  startRegistration,
+} from "./register";
 export { type AdapterOptions, createHandler, serve } from "./server";

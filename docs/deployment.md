@@ -90,3 +90,22 @@ sudo tailscale serve --https=443 --set-path /slack off           # 하나 끄기
 PC 쪽 포워딩 포트를 18790 으로 둔 것은 PC 에서 tsuba 를 직접 띄울 때의 8790 과 겹치지
 않게 하려는 것입니다. 토큰(`TSUBA_TOKEN`)은 어댑터를 띄운 기계의 `.env` 에 있고,
 클라이언트 쪽에서는 프록시가 헤더로 넣습니다. 브라우저에는 가지 않습니다.
+
+## saya 에 등록하기
+
+saya 는 어댑터 주소와 토큰을 들고 있지 않습니다. 어댑터가 saya 를 가리키고 스스로 등록합니다
+(saya `docs/register.md`). serve-kit 의 `serve()` 가 시작할 때 등록하고, saya 가 답한 간격(30초)마다
+다시 알리며, 정상 종료(SIGTERM)에서 등록을 지웁니다. 새 어댑터도 `serve()` 를 쓰면 따로 할 일이 없습니다.
+
+`.env` 에 두 줄이면 됩니다. 없으면 등록하지 않고 예전처럼 서빙만 합니다.
+
+| 변수 | 뜻 |
+| --- | --- |
+| `SAYA_REGISTER_URL` | saya 의 등록 주소. 같은 기계면 `http://127.0.0.1:8798`, 아니면 `https://<saya>.<tailnet>.ts.net:8798` |
+| `SAYA_REGISTER_TOKEN` | saya 의 등록 토큰. 비밀번호로 다룹니다 |
+| `SAYA_ADVERTISE_URL` | saya 가 이 어댑터에 닿는 주소. 없으면 `http://127.0.0.1:<포트>`(saya 와 같은 기계일 때) |
+
+- id 는 `capabilities` 의 `provider.id`, 토큰은 그 어댑터의 HTTP 토큰입니다.
+- saya 는 loopback 과 tailnet 주소만 받습니다. 다른 기계의 어댑터는 `tailscale serve` 로 열고 그 주소를
+  `SAYA_ADVERTISE_URL` 로 줍니다.
+- 등록 실패는 서빙을 막지 않습니다. 상태가 바뀔 때만 한 줄 남기고(토큰은 남기지 않음) 다음 간격에 다시 합니다.
