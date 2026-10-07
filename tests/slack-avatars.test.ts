@@ -14,6 +14,7 @@ import { bounded, deferred } from "./harness/barriers";
 const USER = "U000000002";
 const ROOM = "C000000001";
 const ADDRESS = "https://avatars.slack-edge.com/synthetic/avatar-72.png";
+const BOT_ADDRESS = "https://avatars.slack-edge.com/synthetic/bot-72.png";
 const idFor = (address: string) =>
   `avatar:${USER}:${createHash("sha256").update(address).digest("hex").slice(0, 24)}`;
 const json = (value: unknown, status = 200) =>
@@ -44,6 +45,15 @@ function fixture(text = "Synthetic") {
               profile: { display_name: "Synthetic sender", image_72: address },
             },
           });
+    if (url === "https://slack.com/api/bots.info")
+      return json({
+        ok: true,
+        bot: {
+          id: "B000000003",
+          name: "Synthetic app",
+          icons: { image_72: BOT_ADDRESS },
+        },
+      });
     if (url === "https://slack.com/api/users.conversations")
       return json({
         ok: true,
@@ -66,6 +76,11 @@ function fixture(text = "Synthetic") {
             user: USER,
             bot_id: "B000000002",
             text: "Synthetic app",
+          },
+          {
+            ts: "1699999998.000001",
+            bot_id: "B000000003",
+            text: "Synthetic bare bot",
           },
         ],
       });
@@ -108,7 +123,7 @@ function fixture(text = "Synthetic") {
   };
 }
 
-test("Slack sender avatars share the name lookup, are opaque and URL-versioned; only a bare bot_id has none", async () => {
+test("Slack sender avatars share the name lookup, are opaque and URL-versioned; a bare bot_id shows its app", async () => {
   const f = fixture();
   try {
     const result = await f.read();
@@ -123,10 +138,18 @@ test("Slack sender avatars share the name lookup, are opaque and URL-versioned; 
       expect(message.senderAvatar?.length).toBeLessThanOrEqual(512);
       expect(message.senderAvatar).not.toContain("https");
     }
-    expect(
-      result.messages.find((message) => message.senderId === "B000000001")
-        ?.senderAvatar,
-    ).toBeUndefined();
+    // A username wins; the app's own name and icon come from bots.info.
+    const named = result.messages.find(
+      (message) => message.senderId === "B000000001",
+    );
+    expect(named?.sender).toBe("Synthetic bot");
+    const bare = result.messages.find(
+      (message) => message.senderId === "B000000003",
+    );
+    expect(bare?.sender).toBe("Synthetic app");
+    expect(bare?.senderAvatar).toBe(
+      `avatar:B000000003:${createHash("sha256").update(BOT_ADDRESS).digest("hex").slice(0, 24)}`,
+    );
     expect(
       f.sent.filter((call) => call.url.endsWith("users.info")),
     ).toHaveLength(1);
@@ -260,9 +283,9 @@ for (const address of [
     f.setAddress(address);
     try {
       expect(
-        (await f.read()).messages.every(
-          (message) => message.senderAvatar === undefined,
-        ),
+        (await f.read()).messages
+          .filter((message) => message.senderId === USER)
+          .every((message) => message.senderAvatar === undefined),
       ).toBe(true);
       await expect(
         f.media(typeof address === "string" ? idFor(address) : idFor(ADDRESS)),
@@ -284,7 +307,7 @@ test("Slack avatar ids are strictly parsed before any API or download call", asy
       `avatar:${USER}:abc`,
       `${idFor(ADDRESS)}:extra`,
       `avatar:../${USER}:${"a".repeat(24)}`,
-      idFor(ADDRESS).replace(USER, "B000000001"),
+      idFor(ADDRESS).replace(USER, "C000000001"),
       `avatar:${USER}:${"A".repeat(24)}`,
       `${idFor(ADDRESS)}\n`,
     ])
@@ -379,7 +402,7 @@ for (const [answer, code] of [
     );
     try {
       const result = await f.read();
-      expect(result.messages).toHaveLength(4);
+      expect(result.messages).toHaveLength(5);
       for (const message of result.messages.filter(
         (message) => message.senderId === USER,
       )) {
