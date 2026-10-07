@@ -1,10 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { proxyTransportFromUrl, TelegramClient } from "@mtcute/bun";
 import { serve } from "@tsuba/serve-kit";
+import iconPath from "../icon.svg" with { type: "file" };
 import { telegramBackend } from "./backend";
 import { capabilities } from "./capabilities";
+import { sessionFile } from "./session";
 
 /**
  * The spike from docs/telegram.md: can mtcute on Bun sign a person in, list
@@ -18,9 +19,7 @@ import { capabilities } from "./capabilities";
  *   bun adapters/telegram/src/cli.ts serve
  */
 
-const SESSION = fileURLToPath(
-  new URL("../../../sessions/telegram.session", import.meta.url),
-);
+const SESSION = sessionFile(process.env);
 
 function required(name: string): string {
   const value = process.env[name];
@@ -54,7 +53,7 @@ async function login(tg: TelegramClient) {
       console.log(`That ${kind} was not accepted; try again.`);
     },
   });
-  console.log("Signed in; the session is in sessions/.");
+  console.log(`Signed in; the session is in ${SESSION}.`);
 }
 
 async function signedIn(tg: TelegramClient) {
@@ -125,9 +124,7 @@ async function serveForever(tg: TelegramClient) {
     port: Number(process.env.TSUBA_PORT ?? 8790),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     icon: {
-      bytes: new Uint8Array(
-        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
-      ),
+      bytes: new Uint8Array(await Bun.file(iconPath).arrayBuffer()),
       type: "image/svg+xml",
     },
     capabilities: await capabilities(tg),

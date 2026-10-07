@@ -1,5 +1,6 @@
 import { serve } from "@tsuba/serve-kit";
 import entries from "emoji-datasource/emoji.json";
+import iconPath from "../icon.svg" with { type: "file" };
 import { slackApi, slackScopes } from "./api";
 import { slackBackend } from "./backend";
 import { capabilities, UPLOAD_SCOPE } from "./capabilities";
@@ -78,9 +79,7 @@ if (command === "check") {
     port: Number(process.env.TSUBA_SLACK_PORT ?? 8793),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     icon: {
-      bytes: new Uint8Array(
-        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
-      ),
+      bytes: new Uint8Array(await Bun.file(iconPath).arrayBuffer()),
       type: "image/svg+xml",
     },
     capabilities: capabilities(uploads),

@@ -109,3 +109,18 @@ saya 는 어댑터 주소와 토큰을 들고 있지 않습니다. 어댑터가 
 - saya 는 loopback 과 tailnet 주소만 받습니다. 다른 기계의 어댑터는 `tailscale serve` 로 열고 그 주소를
   `SAYA_ADVERTISE_URL` 로 줍니다.
 - 등록 실패는 서빙을 막지 않습니다. 상태가 바뀔 때만 한 줄 남기고(토큰은 남기지 않음) 다음 간격에 다시 합니다.
+
+## 한 실행파일로
+
+저장소 없이 돌릴 때는 어댑터 넷을 실행파일 하나로 만듭니다(아이콘은 안에 들어감).
+
+```sh
+bun run compile                                   # dist/tsuba (Windows 는 tsuba.exe)
+bun build --compile --minify --target=bun-linux-arm64 bin/tsuba.ts --outfile dist/tsuba-linux-arm64
+dist/tsuba telegram login                         # tsuba <telegram|discord|slack|discord-user> <명령>
+dist/tsuba slack serve
+```
+
+- 실행파일에는 저장소의 `sessions/` 가 없으므로 Telegram 세션 자리를 `TSUBA_SESSIONS_DIR` 로 줍니다
+  (없으면 예전처럼 저장소의 `sessions/`).
+- 환경 변수는 위와 같습니다. Bun 은 작업 디렉터리의 `.env` 를 읽으므로, 다른 곳에서 띄울 때는 변수를 직접 넘깁니다.

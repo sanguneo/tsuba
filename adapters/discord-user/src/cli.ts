@@ -1,4 +1,5 @@
 import { serve } from "@tsuba/serve-kit";
+import iconPath from "../icon.svg" with { type: "file" };
 import { discordUserBackend } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
@@ -33,9 +34,7 @@ if (command !== "check" && command !== "serve") {
     port: Number(process.env.TSUBA_DISCORD_USER_PORT ?? 8794),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     icon: {
-      bytes: new Uint8Array(
-        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
-      ),
+      bytes: new Uint8Array(await Bun.file(iconPath).arrayBuffer()),
       type: "image/svg+xml",
     },
     capabilities: CAPABILITIES,

@@ -6,6 +6,7 @@ import {
   Options,
   Partials,
 } from "discord.js";
+import iconPath from "../icon.svg" with { type: "file" };
 import { discordBackend, warmRecentRooms } from "./backend";
 import { CAPABILITIES } from "./capabilities";
 
@@ -76,9 +77,7 @@ async function serveForever(client: Client<true>) {
     port: Number(process.env.TSUBA_DISCORD_PORT ?? 8792),
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     icon: {
-      bytes: new Uint8Array(
-        await Bun.file(new URL("../icon.svg", import.meta.url)).arrayBuffer(),
-      ),
+      bytes: new Uint8Array(await Bun.file(iconPath).arrayBuffer()),
       type: "image/svg+xml",
     },
     capabilities: CAPABILITIES,
