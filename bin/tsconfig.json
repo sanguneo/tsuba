@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "exactOptionalPropertyTypes": false
+  },
+  "include": [
+    ".",
+    "../types",
+    "../adapters/telegram/src/environment.d.ts",
+    "../adapters/discord/src/environment.d.ts"
+  ]
+}
