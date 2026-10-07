@@ -12,6 +12,8 @@ import {
 import { REACTION_NOOPS, type SlackCall, slackError } from "./api";
 import type { EmojiTable } from "./emoji";
 import {
+  blockImageUrl,
+  blockLines,
   fromSlackText,
   groupDmTitle,
   mapSlackMessage,
@@ -26,6 +28,7 @@ import {
   threadOnly,
   toSlackText,
 } from "./mapping";
+import { fetchPublicImage, type Resolve, resolveHost } from "./publicImage";
 
 const CONVERSATION = /^[CDG][A-Z0-9]{6,}$/;
 const TS = /^\d+\.\d{1,6}$/;
@@ -39,7 +42,8 @@ const AVATAR_HOSTS = new Set([
 ]);
 // Where secure.gravatar.com redirects a person without a picture (Photon).
 const GRAVATAR_HOPS = new Set(["i0.wp.com", "i1.wp.com", "i2.wp.com"]);
-const AVATAR_ID = /^avatar:([UW][A-Z0-9]{6,128}):([a-f0-9]{24})$/;
+const AVATAR_ID = /^avatar:([UWB][A-Z0-9]{6,128}):([a-f0-9]{24})$/;
+const BLOCK_IMAGE_ID = /^([CDG][A-Z0-9]{6,}):(\d+\.\d{1,6}):image(\d{1,3})$/;
 // users.info is Tier 4; reuse display profiles across pages for ten minutes.
 const USER_CACHE_MS = 10 * 60_000;
 
@@ -82,6 +86,13 @@ interface SlackUser {
   deleted?: boolean;
   profile?: { display_name?: string; real_name?: string; image_72?: string };
   real_name?: string;
+}
+
+interface SlackBot {
+  id: string;
+  name?: string;
+  deleted?: boolean;
+  icons?: { image_72?: string; image_48?: string };
 }
 
 interface Conversation extends SlackConversationLike {
@@ -137,12 +148,17 @@ export function slackBackend(
     /** Whether the token may upload (files:write); only then is `upload` given. */
     uploads?: boolean;
     sharePollMs?: number;
+    /** How a block image's host is resolved before it is fetched; tests answer it. */
+    resolve?: Resolve;
   } = {},
 ): AdapterBackend & { stop(): void } {
   const users = new Map<
     string,
     { expires: number; value: Promise<SlackUser> }
   >();
+  const bots = new Map<string, { expires: number; value: Promise<SlackBot> }>();
+  const groupTitles = new Map<string, Promise<string>>();
+  const resolve = options.resolve ?? resolveHost;
   const info = new Map<string, SlackConversationInfo>();
   const stale = new Set<string>();
   const failed = new Set<string>();
@@ -165,6 +181,33 @@ export function slackBackend(
       if (users.get(id)?.value === value) users.delete(id);
       throw error;
     });
+  }
+
+  function bot(id: string, refresh = false): Promise<SlackBot> {
+    const held = bots.get(id);
+    if (!refresh && held && held.expires > Date.now()) return held.value;
+    const value = call<{ bot?: SlackBot }>("bots.info", { bot: id }).then(
+      (answer) => {
+        if (!answer.bot || answer.bot.id !== id)
+          throw new AdapterError("INTERNAL", "Slack answered an invalid bot");
+        return answer.bot;
+      },
+    );
+    bots.set(id, { expires: Date.now() + USER_CACHE_MS, value });
+    return value.catch((error: unknown) => {
+      if (bots.get(id)?.value === value) bots.delete(id);
+      throw error;
+    });
+  }
+
+  /** An app's name and picture; like a person's, never a reason to hide the message. */
+  async function displayBot(id: string): Promise<SlackBot | undefined> {
+    try {
+      return await bot(id);
+    } catch (error) {
+      if (error instanceof AdapterError) return undefined;
+      throw error;
+    }
   }
 
   async function displayUser(id: string): Promise<SlackUser | undefined> {
@@ -198,26 +241,37 @@ export function slackBackend(
     roomId: string,
     message: SlackMessageLike,
   ): Promise<Message> {
-    const text = message.text ?? "";
+    // A bot often keeps its body in blocks; their words join the plain text.
+    const text = [
+      message.text ?? "",
+      ...blockLines(message.blocks ?? [], message.text ?? ""),
+    ]
+      .filter(Boolean)
+      .join("\n");
     const known = await names([
       ...mentionedUsers(text),
       ...(message.user ? [message.user] : []),
     ]);
     // An app's message that names its bot user shows that user's picture, as
-    // Slack does; a message with only a bot_id has none here (no extra calls).
+    // Slack does; one with only a bot_id shows the app's own name and icon.
+    const app =
+      !message.user && message.bot_id
+        ? await displayBot(message.bot_id)
+        : undefined;
     const address = message.user
       ? (await displayUser(message.user))?.profile?.image_72
-      : undefined;
+      : app?.icons?.image_72;
+    const owner = message.user ?? (app ? message.bot_id : undefined);
     const senderAvatar =
-      typeof address === "string" && avatarUrl(address) && message.user
-        ? `avatar:${message.user}:${avatarHash(address)}`
+      typeof address === "string" && avatarUrl(address) && owner
+        ? `avatar:${owner}:${avatarHash(address)}`
         : undefined;
     return mapSlackMessage(roomId, message, {
       selfId: identity.userId,
       ...(senderAvatar ? { senderAvatar } : {}),
       sender: message.user
         ? (known.get(message.user) ?? message.user)
-        : (message.username ?? "bot"),
+        : (message.username ?? app?.name ?? "bot"),
       text: fromSlackText(text, { user: (id) => known.get(id) }),
       emoji,
     });
@@ -320,6 +374,35 @@ export function slackBackend(
     }, options.fillIntervalMs ?? INFO_INTERVAL_MS);
   }
 
+  /** A group DM by the people's display names, not the handles in its Slack name. */
+  function groupTitle(conversation: Conversation): Promise<string> {
+    const fallback = groupDmTitle(
+      conversation.name ?? conversation.id,
+      identity.handle,
+    );
+    const held = groupTitles.get(conversation.id);
+    if (held) return held;
+    const value = call<{ members?: string[] }>("conversations.members", {
+      channel: conversation.id,
+      limit: 20,
+    })
+      .then(async (answer) => {
+        const others = (answer.members ?? []).filter(
+          (id) => id !== identity.userId,
+        );
+        if (!others.length) return fallback;
+        const known = await names(others);
+        return others.map((id) => known.get(id) ?? id).join(", ");
+      })
+      .catch((error: unknown) => {
+        groupTitles.delete(conversation.id);
+        if (error instanceof AdapterError) return fallback;
+        throw error;
+      });
+    groupTitles.set(conversation.id, value);
+    return value;
+  }
+
   async function title(
     conversation: Conversation,
   ): Promise<{ title: string; canSend: boolean }> {
@@ -331,13 +414,7 @@ export function slackBackend(
       };
     }
     if (conversation.is_mpim)
-      return {
-        title: groupDmTitle(
-          conversation.name ?? conversation.id,
-          identity.handle,
-        ),
-        canSend: true,
-      };
+      return { title: await groupTitle(conversation), canSend: true };
     return { title: `#${conversation.name ?? conversation.id}`, canSend: true };
   }
 
@@ -679,9 +756,11 @@ export function slackBackend(
         const match = AVATAR_ID.exec(id);
         if (!match || match[0] !== id)
           throw new AdapterError("NOT_FOUND", "No such Slack avatar");
-        const userId = match[1] as string;
+        const ownerId = match[1] as string;
         // Re-read so a stale opaque id never serves a replacement picture.
-        const address = (await user(userId, true)).profile?.image_72;
+        const address = ownerId.startsWith("B")
+          ? (await bot(ownerId, true)).icons?.image_72
+          : (await user(ownerId, true)).profile?.image_72;
         const url = avatarUrl(address);
         if (
           !url ||
@@ -735,6 +814,20 @@ export function slackBackend(
         if (!response.ok || !response.body || !mimeType?.startsWith("image/"))
           throw slackError("invalid_avatar_response");
         return { body: response.body, mimeType };
+      }
+      const image = BLOCK_IMAGE_ID.exec(id);
+      if (image) {
+        const [, roomId = "", ts = "", index = ""] = image;
+        // Re-read the message so an id only ever reaches the picture it names.
+        const block = (await messageAt(roomId, ts)).blocks?.[Number(index)];
+        const url = blockImageUrl(block);
+        if (!url) throw new AdapterError("NOT_FOUND", "No such Slack picture");
+        // Someone else's address: no Slack token, public hosts only.
+        const picture = await fetchPublicImage(url, fetcher, signal, resolve);
+        return {
+          ...picture,
+          ...(block?.alt_text ? { name: block.alt_text } : {}),
+        };
       }
       const [, roomId = "", ts = "", fileId = ""] =
         /^([CDG][A-Z0-9]{6,}):(\d+\.\d{1,6}):(F[A-Z0-9]+)$/.exec(id) ?? [];

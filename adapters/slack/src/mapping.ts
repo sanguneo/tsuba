@@ -44,6 +44,19 @@ export interface SlackReactionLike {
   users?: readonly string[];
 }
 
+/** The Block Kit blocks a message can carry; only what is drawn is typed. */
+export interface SlackBlockLike {
+  type?: string;
+  text?: { type?: string; text?: string };
+  fields?: readonly { text?: string }[];
+  elements?: readonly { type?: string; text?: string }[];
+  image_url?: string;
+  alt_text?: string;
+  image_width?: number;
+  image_height?: number;
+  image_bytes?: number;
+}
+
 export interface SlackMessageLike {
   ts: string;
   user?: string;
@@ -55,6 +68,93 @@ export interface SlackMessageLike {
   edited?: { ts: string };
   files?: readonly SlackFileLike[];
   reactions?: readonly SlackReactionLike[];
+  blocks?: readonly SlackBlockLike[];
+}
+
+/** Raster pictures a block image may be, by the address's extension. */
+const BLOCK_IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/** A block image's address when it is a plain https one; anything else is not drawn. */
+export function blockImageUrl(
+  block: SlackBlockLike | undefined,
+): URL | undefined {
+  const address = block?.type === "image" ? block.image_url : undefined;
+  if (typeof address !== "string" || !URL.canParse(address)) return undefined;
+  const url = new URL(address);
+  return url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.port
+    ? url
+    : undefined;
+}
+
+/** A block image's type, from its address; unknown kinds are not offered. */
+export function blockImageType(url: URL): string | undefined {
+  const extension = url.pathname.split(".").pop()?.toLowerCase() ?? "";
+  return BLOCK_IMAGE_TYPES[extension];
+}
+
+/**
+ * Image blocks (a bot's picture by address) as attachments. Slack measured
+ * them when the message was posted, so the size comes from the block.
+ */
+export function mapBlockImages(
+  roomId: string,
+  ts: string,
+  blocks: readonly SlackBlockLike[],
+): Attachment[] {
+  const positive = (value: number | undefined) =>
+    value !== undefined && Number.isSafeInteger(value) && value > 0;
+  return blocks.flatMap((block, index) => {
+    const url = blockImageUrl(block);
+    const mimeType = url ? blockImageType(url) : undefined;
+    if (!url || !mimeType) return [];
+    return [
+      {
+        id: `${roomId}:${ts}:image${index}`,
+        kind: "image" as const,
+        mimeType,
+        ...(block.alt_text ? { name: block.alt_text } : {}),
+        ...(positive(block.image_bytes) ? { size: block.image_bytes } : {}),
+        ...(positive(block.image_width) && positive(block.image_height)
+          ? { width: block.image_width, height: block.image_height }
+          : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * The words of a message's header, section and context blocks that its plain
+ * `text` does not already say: a bot's message often keeps its body there.
+ */
+export function blockLines(
+  blocks: readonly SlackBlockLike[],
+  text: string,
+): string[] {
+  const lines: string[] = [];
+  const add = (value: string | undefined) => {
+    const line = value?.trim();
+    if (line && !text.includes(line) && !lines.includes(line)) lines.push(line);
+  };
+  for (const block of blocks) {
+    if (block.type === "header" || block.type === "section")
+      add(block.text?.text);
+    if (block.type === "section")
+      for (const field of block.fields ?? []) add(field.text);
+    if (block.type === "context")
+      for (const element of block.elements ?? [])
+        if (element.type === "mrkdwn" || element.type === "plain_text")
+          add(element.text);
+  }
+  return lines;
 }
 
 /** Subtypes that are someone writing; every other subtype is a service notice. */
@@ -256,10 +356,13 @@ export function mapSlackMessage(
     emoji: EmojiTable;
   },
 ): Message {
-  const attachments = (message.files ?? []).flatMap((file) => {
-    const mapped = mapSlackFile(roomId, message.ts, file);
-    return mapped ? [mapped] : [];
-  });
+  const attachments = [
+    ...(message.files ?? []).flatMap((file) => {
+      const mapped = mapSlackFile(roomId, message.ts, file);
+      return mapped ? [mapped] : [];
+    }),
+    ...mapBlockImages(roomId, message.ts, message.blocks ?? []),
+  ];
   const reactions = mapSlackReactions(
     message.reactions ?? [],
     context.selfId,
