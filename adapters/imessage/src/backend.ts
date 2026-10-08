@@ -1,6 +1,8 @@
+import { open } from "node:fs/promises";
 import {
   type AdapterBackend,
   AdapterError,
+  type Attachment,
   type ErrorCode,
   type Message,
   type ReadMessagesRequest,
@@ -19,6 +21,12 @@ const READ_BACK = 10;
 /** A dead watcher is restarted after this long, doubling up to half a minute. */
 const RETRY_BASE_MS = 1000;
 const RETRY_CAP_MS = 30_000;
+/** Bytes handed to `/media` at a time, so no attachment is ever held whole. */
+const CHUNK = 64 * 1024;
+/** `<chat rowid>:<message rowid>:<position in that message's attachments>`. */
+const MEDIA_ID = /^([1-9]\d*):([1-9]\d*):(\d+)$/;
+/** Opening fails with these when the attachment itself is not there to serve. */
+const UNSERVABLE = new Set(["ENOENT", "EACCES", "EPERM"]);
 
 export interface ImsgRun {
   stdout: string;
@@ -40,6 +48,15 @@ interface ImsgChat {
   participants?: string[];
 }
 
+interface ImsgAttachment {
+  filename?: string;
+  transfer_name?: string;
+  original_path?: string;
+  mime_type?: string;
+  missing?: boolean;
+  is_sticker?: boolean;
+}
+
 interface ImsgMessage {
   id: number;
   chat_id: number;
@@ -47,6 +64,7 @@ interface ImsgMessage {
   is_from_me?: boolean;
   text?: string;
   created_at?: string;
+  attachments?: ImsgAttachment[];
 }
 
 async function spawn(args: string[]): Promise<ImsgRun> {
@@ -192,6 +210,71 @@ function messageId(value: string): number {
   return id;
 }
 
+/** What a media id names; an id the adapter did not write names nothing. */
+function mediaId(
+  value: string,
+): { chat: number; message: number; index: number } | undefined {
+  const match = MEDIA_ID.exec(value);
+  if (!match) return undefined;
+  const [, room = "", row = "", at = ""] = match;
+  const chat = Number(room);
+  const message = Number(row);
+  const index = Number(at);
+  return Number.isSafeInteger(chat) &&
+    Number.isSafeInteger(message) &&
+    Number.isSafeInteger(index)
+    ? { chat, message, index }
+    : undefined;
+}
+
+/**
+ * The path of an attachment Messages still holds. `imsg` sets `missing` for the
+ * ones it no longer has, whatever path it then writes; a path that is not
+ * absolute names nothing `/media` can open.
+ */
+function heldPath(attachment: ImsgAttachment): string | undefined {
+  const path = attachment.original_path;
+  return attachment.missing !== true &&
+    typeof path === "string" &&
+    path.startsWith("/")
+    ? path
+    : undefined;
+}
+
+/** iMessage reports no type for a plugin payload, whose dynamic UTI names nothing. */
+function attachmentKind(attachment: ImsgAttachment): Attachment["kind"] {
+  if (attachment.is_sticker === true) return "sticker";
+  const type = attachment.mime_type ?? "";
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+/** The last segment of what the sender called the file, never a path. */
+function attachmentName(attachment: ImsgAttachment): string | undefined {
+  const named = attachment.transfer_name ?? attachment.filename;
+  const base = named?.split(/[\\/]/).pop()?.trim();
+  return base || undefined;
+}
+
+function mapAttachment(
+  chat: number,
+  message: number,
+  index: number,
+  row: ImsgAttachment,
+): Attachment | null {
+  if (heldPath(row) === undefined) return null;
+  const name = attachmentName(row);
+  const mimeType = row.mime_type?.trim();
+  return {
+    id: `${chat}:${message}:${index}`,
+    kind: attachmentKind(row),
+    ...(name ? { name } : {}),
+    ...(mimeType ? { mimeType } : {}),
+  };
+}
+
 function room(row: ImsgChat): Room {
   const named = row.display_name?.trim() || row.name?.trim();
   const participants = (row.participants ?? []).filter((handle) => handle);
@@ -208,16 +291,73 @@ function room(row: ImsgChat): Room {
 function message(row: ImsgMessage): Message {
   const fromMe = row.is_from_me === true;
   const handle = row.sender ?? "";
+  const text = row.text ?? "";
+  // The index is the attachment's own position, which is what a media id names.
+  const attachments = (row.attachments ?? []).flatMap((item, index) => {
+    const mapped = mapAttachment(row.chat_id, row.id, index, item);
+    return mapped ? [mapped] : [];
+  });
   return {
     id: String(row.id),
     roomId: String(row.chat_id),
     ...(fromMe ? { senderId: "me" } : handle ? { senderId: handle } : {}),
     sender: fromMe ? "me" : handle,
-    text: row.text ?? "",
-    kind: "text",
+    text,
+    kind: attachments.length && !text ? "media" : "text",
     sentAt: row.created_at ?? "",
     fromMe,
+    ...(attachments.length ? { attachments } : {}),
   };
+}
+
+/**
+ * The file's bytes, read a chunk at a time from a handle this stream closes
+ * however it ends, so a cancelled read leaves nothing open behind it.
+ */
+async function bytes(
+  path: string,
+  signal: AbortSignal,
+): Promise<ReadableStream<Uint8Array>> {
+  const handle = await open(path, "r");
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    void handle.close().catch(() => {});
+  };
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (signal.aborted) {
+          close();
+          controller.close();
+          return;
+        }
+        try {
+          const buffer = new Uint8Array(CHUNK);
+          const { bytesRead } = await handle.read(buffer);
+          if (bytesRead === 0) {
+            close();
+            controller.close();
+            return;
+          }
+          controller.enqueue(buffer.subarray(0, bytesRead));
+        } catch (error) {
+          close();
+          controller.error(error);
+        }
+      },
+      cancel() {
+        close();
+      },
+    },
+    // Nothing is read ahead of a client asking, so an abort lands between chunks.
+    { highWaterMark: 0 },
+  );
+  const stop = () => void body.cancel().catch(() => {});
+  if (signal.aborted) stop();
+  else signal.addEventListener("abort", stop, { once: true });
+  return body;
 }
 
 function byNewest(left: Room, right: Room): number {
@@ -233,8 +373,9 @@ function byNewest(left: Room, right: Room): number {
  * Rooms are the conversations in that database, direct and group alike. The
  * stream is `imsg watch` on the same file, so it sees what this Mac's Messages
  * receives and nothing a different device received. There is no iMessage SDK,
- * so nothing else is reachable: no edits, reactions or files, and imsg's own
- * commands for those need SIP off or are unbuilt.
+ * so nothing else is reachable: no edits or reactions, and imsg's own commands
+ * for those need SIP off or are unbuilt. Attachments are read from the paths
+ * the database records, which Full Disk Access already covers.
  */
 export function imessageBackend(
   runner: ImsgRunner = spawn,
@@ -265,9 +406,36 @@ export function imessageBackend(
       "--limit",
       String(limit),
       ...(end === undefined ? [] : ["--end", end]),
+      "--attachments",
       "--json",
     ]);
     return jsonLines<ImsgMessage>(answer.stdout);
+  }
+
+  /**
+   * The row a media id names, read again so an id only ever reaches the file it
+   * named. `imsg` pages by timestamp rather than id, so this walks back until
+   * that row is in hand, exactly as a `before` page does.
+   */
+  async function rowAt(chat: number, wanted: number): Promise<ImsgMessage> {
+    const known = new Set<number>();
+    let end: string | undefined;
+    while (true) {
+      const batch = await history(chat, MAX_LIMIT, end);
+      if (!batch.length) break;
+      const found = batch.find((row) => row.id === wanted);
+      if (found) return found;
+      let fresh = 0;
+      for (const row of batch) {
+        if (known.has(row.id)) continue;
+        known.add(row.id);
+        fresh++;
+      }
+      const oldest = batch[batch.length - 1];
+      if (batch.length < MAX_LIMIT || fresh === 0 || !oldest?.created_at) break;
+      end = oldest.created_at;
+    }
+    throw new AdapterError("NOT_FOUND", "No such attachment");
   }
 
   return {
@@ -369,6 +537,7 @@ export function imessageBackend(
         try {
           child = watcher([
             "watch",
+            "--attachments",
             "--json",
             ...(cursor === undefined ? [] : ["--since-rowid", String(cursor)]),
           ]);
@@ -418,6 +587,36 @@ export function imessageBackend(
           "imsg sent the message, but its stored row could not be read back",
         );
       return message(stored);
+    },
+
+    async media(id, signal) {
+      const named = mediaId(id);
+      if (!named) throw new AdapterError("NOT_FOUND", "No such attachment");
+      const row = await rowAt(named.chat, named.message);
+      const found = row.attachments?.[named.index];
+      const path = found ? heldPath(found) : undefined;
+      if (!found || !path)
+        throw new AdapterError("NOT_FOUND", "No such attachment");
+      const name = attachmentName(found);
+      const mimeType = found.mime_type?.trim();
+      // Opening is what refuses a file Messages no longer has, or one this
+      // process may not read, before any header is written.
+      let body: ReadableStream<Uint8Array>;
+      try {
+        body = await bytes(path, signal);
+      } catch (error) {
+        const code =
+          error && typeof error === "object" && "code" in error
+            ? String(error.code)
+            : "";
+        if (!UNSERVABLE.has(code)) throw error;
+        throw new AdapterError("NOT_FOUND", "No such attachment");
+      }
+      return {
+        body,
+        ...(mimeType ? { mimeType } : {}),
+        ...(name ? { name } : {}),
+      };
     },
   };
 }

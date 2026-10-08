@@ -6,9 +6,9 @@ iMessage 에는 SDK 도 네트워크 API 도 없어서 `imsg` 가 유일한 접�
 `serve` 는 시작할 때 `adapters/imessage/icon.svg` 를 한 번 읽어 `/icon` 으로 답하고
 `provider.icon` 에 바이트 버전을 알립니다(0.2.5).
 
-계약의 방 목록, 메시지 읽기(이전 id 페이징), 실시간 수신(커서 스트림), 텍스트 전송을
-구현했습니다. 합성 데이터와 로컬 HTTP 로 검증하며, 실제 계정에서의 검증은 운영자가
-별도로 합니다.
+계약의 방 목록, 메시지 읽기(이전 id 페이징), 실시간 수신(커서 스트림), 텍스트 전송,
+첨부 읽기(`/media`)를 구현했습니다. 합성 데이터와 로컬 HTTP 로 검증하며, 실제 계정에서의
+검증은 운영자가 별도로 합니다.
 
 ## 기반: imsg
 
@@ -77,8 +77,9 @@ TSUBA_TOKEN=... bun adapters/imessage/src/cli.ts serve
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | `imsg history --chat-id <rowid> --limit n --json`. 오래된 순서로 반환. 어댑터의 읽기 상한은 100개 |
 | `messages.stream` | `resume: cursor` | `imsg watch --json`. 새 메시지마다 `message` 이벤트. 이어 읽기는 `since=<roomId>:<messageId>` 로 그 행 뒤를 채움. `message` 는 모든 스트림이 보내는 기본 이벤트라 `events` 를 비워 둠 |
 | `messages.send` | `maxLength: 20000`, `receipt: stored` | `imsg send --chat-id <rowid> --text <본문> --json`. `sent` 를 확인한 뒤 저장된 행을 되읽어 답함 |
+| `attachments.read` | `{}` | `imsg history --attachments --json` 이 주는 첨부 메타데이터. `GET /media?id=<roomId>:<messageId>:<index>` 가 그 파일을 흘려보냄 |
 
-수정, 삭제, 반응, 읽음 처리, 첨부, 아바타, 파일 보내기는 신고하지 않습니다.
+수정, 삭제, 반응, 읽음 처리, 아바타, 파일 보내기는 신고하지 않습니다.
 쓰기는 serve-kit 의 줄 하나를 함께 쓰며, 한 번에 하나씩 실행 중 요청을 포함해 최대 4개만
 받아들이고 5번째는 즉시 429 입니다.
 
@@ -115,6 +116,27 @@ TSUBA_TOKEN=... bun adapters/imessage/src/cli.ts serve
 - `--end` 는 관측상 경계 시각의 행을 포함하므로 같은 행이 다시 옵니다. id 로 중복을
   제거합니다.
 
+## 첨부와 `/media`
+
+어댑터는 `imsg history` 와 `imsg watch` 에 `--attachments` 를 주고, 돌아온 `attachments`
+배열을 계약의 `Attachment` 로 옮깁니다. 본문이 없는 첨부 메시지는 `kind: "media"` 로
+답합니다(본문이 있으면 `text` 그대로).
+
+- 첨부의 id 는 `<chat rowid>:<message rowid>:<배열에서의 위치>` 입니다. `GET /media?id=` 는
+  그 행을 **다시 읽어** 경로를 얻으므로, 같은 id 가 바뀐 파일을 답하지 않습니다.
+- `imsg` 에는 메시지 하나를 id 로 주는 명령이 없어, 그 방을 최신부터 `--end` 로 걸어가며
+  그 행을 찾습니다(이전 메시지 페이징과 같은 방식).
+- 경로는 `imsg` 가 주는 절대 경로 그대로이고 `~/Library/Messages` 아래입니다. 이미 필요한
+  Full Disk Access 가 덮는 범위라, SIP 를 끄거나 Messages.app 에 주입할 필요가 없습니다.
+- **`imsg` 가 `missing: true` 로 표시한 첨부는 싣지 않습니다.** Messages 가 더 이상 그 파일을
+  갖고 있지 않아 답할 바이트가 없습니다. 그런 메시지에 본문도 없으면 빈 `text` 메시지가
+  됩니다. 파일이 그 사이에 사라졌거나 이 프로세스가 읽을 수 없으면 `GET /media` 는
+  `404 NOT_FOUND` 입니다.
+- **형식**은 `imsg` 가 주는 `mime_type` 을 그대로 넘깁니다. 다만 iMessage 의 플러그인
+  페이로드에는 형식이 비어 있어(동적 UTI) 그런 첨부는 `application/octet-stream` 과
+  `attachment` 로 답합니다. 응답 헤더는 serve-kit 이 정합니다.
+- 바이트는 64 KiB 씩 흘려보내며, 읽는 도중 클라이언트가 끊으면 그 자리에서 파일을 닫습니다.
+
 ## 오류 대응
 
 | imsg | 계약 |
@@ -138,8 +160,9 @@ stderr). 어댑터는 두 스트림을 함께 보고 위 표대로 옮깁니다.
 - **전송 답의 id 는 되읽어 채웁니다.** `imsg send --json` 이 id 를 주지 않아 어댑터가
   그 방의 최근 10개에서 보낸 행을 찾습니다. 찾지 못하면 전송은 확인됐지만 답을 만들 수
   없어 `500 INTERNAL` 입니다.
-- **첨부가 있는 메시지도 `kind: "text"` 로 옵니다.** 본문이 빈 문자열일 수 있습니다.
-  스트림(`imsg watch`)도 같은 매퍼를 쓰므로 마찬가지입니다.
+- **첨부의 `size`·`width`·`height`·`durationSeconds` 는 채우지 않습니다.** `imsg` 가 주는
+  `total_bytes` 는 실제 저장된 파일 크기와 다른 경우가 있어(원본 기준) 그대로 신고하지
+  않습니다.
 - `messages.send.maxLength` 는 Apple 이 문서로 정한 값이 아닙니다. 20,000 코드 포인트를
   보수적 상한으로 신고하며, 출처와 근거는 `src/capabilities.ts` 주석에 있습니다.
 - **`imsg` 의 나머지 명령을 쓰지 않습니다.** `react`·`read`·`typing`·`send-rich` 는 SIP 를

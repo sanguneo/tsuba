@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createHandler } from "@tsuba/serve-kit";
 import { bounded, deferred } from "../../../tests/harness/barriers";
 import {
@@ -133,6 +136,68 @@ function send(
   );
 }
 
+function media(handler: ReturnType<typeof surface>, id: string) {
+  return handler.handle(
+    new Request(`http://synthetic/media?id=${encodeURIComponent(id)}`, {
+      headers: BEARER,
+    }),
+  );
+}
+
+function present<T>(method: T | undefined): T {
+  if (!method) throw new Error("The backend is missing a method");
+  return method;
+}
+
+/** The directories these tests make, removed when the file is done. */
+const made: string[] = [];
+
+afterAll(() => {
+  for (const directory of made)
+    rmSync(directory, { recursive: true, force: true });
+});
+
+function syntheticDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), "tsuba-imessage-"));
+  made.push(directory);
+  return directory;
+}
+
+/** A file of synthetic bytes, at a path no real attachment ever had. */
+function syntheticFile(bytes: number[]): string {
+  const path = join(syntheticDirectory(), "synthetic.jpg");
+  writeFileSync(path, new Uint8Array(bytes));
+  return path;
+}
+
+/** One attachment row as `imsg history --attachments` writes it. */
+function attachment(path: string, extra: Record<string, unknown> = {}) {
+  return {
+    filename: "synthetic.jpg",
+    transfer_name: "synthetic.jpg",
+    original_path: path,
+    mime_type: "image/jpeg",
+    missing: false,
+    is_sticker: false,
+    ...extra,
+  };
+}
+
+function attachmentMessage(
+  attachments: Record<string, unknown>[],
+  text?: string,
+) {
+  return {
+    id: 28,
+    chat_id: 1,
+    sender: "+10000000009",
+    is_from_me: false,
+    ...(text === undefined ? {} : { text }),
+    created_at: "2024-01-01T00:00:10.000Z",
+    attachments,
+  };
+}
+
 const WATCH_ROWS = [
   {
     id: 41,
@@ -240,6 +305,7 @@ test("declares rooms, reads, streams and sends, and nothing it cannot do", () =>
   expect(declared.provider).toEqual({ id: "imessage", name: "iMessage" });
   expect(declared.account.kind).toBe("user");
   expect(Object.keys(declared.features).sort()).toEqual([
+    "attachments.read",
     "messages.read",
     "messages.send",
     "messages.stream",
@@ -255,6 +321,7 @@ test("declares rooms, reads, streams and sends, and nothing it cannot do", () =>
     maxLength: 20_000,
     receipt: "stored",
   });
+  expect(declared.features["attachments.read"]).toEqual({});
 });
 
 test("rooms come from imsg chats, newest first, capped with a probe row", async () => {
@@ -302,7 +369,7 @@ test("reads answer oldest first and map both directions", async () => {
     fromMe: false,
   });
   expect(calls).toEqual([
-    ["history", "--chat-id", "1", "--limit", "3", "--json"],
+    ["history", "--chat-id", "1", "--limit", "3", "--attachments", "--json"],
   ]);
 });
 
@@ -321,7 +388,7 @@ test("a before-id page walks back with --end until enough older rows are in hand
   ]);
   expect(body.hasEarlier).toBe(true);
   expect(calls).toEqual([
-    ["history", "--chat-id", "1", "--limit", "3", "--json"],
+    ["history", "--chat-id", "1", "--limit", "3", "--attachments", "--json"],
     [
       "history",
       "--chat-id",
@@ -330,6 +397,7 @@ test("a before-id page walks back with --end until enough older rows are in hand
       "3",
       "--end",
       "2024-01-01T00:00:10.000Z",
+      "--attachments",
       "--json",
     ],
   ]);
@@ -478,7 +546,7 @@ test("a stream answers each watched line as a message event", async () => {
   const sse = await opened(response);
   await sse.until("event: ready\n");
   const watcher = await at(0);
-  expect(watcher.args).toEqual(["watch", "--json"]);
+  expect(watcher.args).toEqual(["watch", "--attachments", "--json"]);
   watcher.emit(JSON.stringify(WATCH_ROWS[0]));
   const seen = frames(await sse.until("event: message\n"));
   expect(seen.map((frame) => frame.event)).toEqual(["ready", "message"]);
@@ -536,7 +604,13 @@ test("a watcher that dies is restarted past the last rowid, not the stream", asy
   const restarted = at(1);
   first.die(1);
   const second = await restarted;
-  expect(second.args).toEqual(["watch", "--json", "--since-rowid", "41"]);
+  expect(second.args).toEqual([
+    "watch",
+    "--attachments",
+    "--json",
+    "--since-rowid",
+    "41",
+  ]);
   second.emit(JSON.stringify(WATCH_ROWS[1]));
   const seen = frames(await sse.until("event: message\n", 2));
   expect(seen.filter((frame) => frame.event === "error")).toEqual([]);
@@ -577,7 +651,7 @@ test("a resumed cursor sends what the room got after it", async () => {
   ).toEqual(["29", "30"]);
   expect(seen.at(-1)?.data).toEqual({ ok: true, cursor: { "1": "30" } });
   expect(calls).toEqual([
-    ["history", "--chat-id", "1", "--limit", "100", "--json"],
+    ["history", "--chat-id", "1", "--limit", "100", "--attachments", "--json"],
   ]);
   await sse.close();
   handler.stop();
@@ -596,4 +670,229 @@ test("a cursor that is not a rowid is refused, not taken as now", async () => {
   expect(calls).toEqual([]);
   await sse.close();
   handler.stop();
+});
+
+test("a message that is only an attachment is media, and names it", async () => {
+  const file = syntheticFile([1, 2, 3, 4]);
+  const { runner, calls } = scripted(
+    lines([attachmentMessage([attachment(file)])]),
+  );
+  const response = await messages(surface(runner), "roomId=1&limit=1");
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.messages[0]).toMatchObject({
+    id: "28",
+    roomId: "1",
+    text: "",
+    kind: "media",
+  });
+  expect(body.messages[0].attachments).toEqual([
+    {
+      id: "1:28:0",
+      kind: "image",
+      name: "synthetic.jpg",
+      mimeType: "image/jpeg",
+    },
+  ]);
+  expect(calls).toEqual([
+    ["history", "--chat-id", "1", "--limit", "2", "--attachments", "--json"],
+  ]);
+});
+
+test("a message with text keeps its kind and still carries the attachment", async () => {
+  const file = syntheticFile([9]);
+  const { runner } = scripted(
+    lines([attachmentMessage([attachment(file)], "synthetic caption")]),
+  );
+  const body = await (
+    await messages(surface(runner), "roomId=1&limit=1")
+  ).json();
+  expect(body.messages[0]).toMatchObject({
+    text: "synthetic caption",
+    kind: "text",
+  });
+  expect(body.messages[0].attachments).toHaveLength(1);
+});
+
+test("a sticker is a sticker, and a type iMessage does not state is a file", async () => {
+  const sticker = syntheticFile([1]);
+  const payload = syntheticFile([2]);
+  const { runner } = scripted(
+    lines([
+      attachmentMessage([
+        attachment(sticker, { is_sticker: true }),
+        attachment(payload, {
+          mime_type: "",
+          transfer_name: "synthetic.pluginpayloadattachment",
+        }),
+      ]),
+    ]),
+  );
+  const body = await (
+    await messages(surface(runner), "roomId=1&limit=1")
+  ).json();
+  expect(body.messages[0].attachments).toEqual([
+    {
+      id: "1:28:0",
+      kind: "sticker",
+      name: "synthetic.jpg",
+      mimeType: "image/jpeg",
+    },
+    {
+      id: "1:28:1",
+      kind: "file",
+      name: "synthetic.pluginpayloadattachment",
+    },
+  ]);
+});
+
+test("an attachment Messages no longer holds is not offered", async () => {
+  const { runner } = scripted(
+    lines([
+      attachmentMessage([
+        attachment("synthetic-gone.jpg", {
+          missing: true,
+          original_path: "synthetic-gone.jpg",
+        }),
+      ]),
+    ]),
+  );
+  const body = await (
+    await messages(surface(runner), "roomId=1&limit=1")
+  ).json();
+  expect(body.messages[0].kind).toBe("text");
+  expect(body.messages[0].attachments).toBeUndefined();
+});
+
+test("media answers the file's bytes with the headers serve-kit writes", async () => {
+  const image = syntheticFile([1, 2, 3, 4]);
+  const payload = syntheticFile([5, 6]);
+  const { runner, calls } = scripted(
+    lines([
+      attachmentMessage([
+        attachment(image),
+        attachment(payload, {
+          mime_type: "",
+          transfer_name: "synthetic.pluginpayloadattachment",
+        }),
+      ]),
+    ]),
+    lines([
+      attachmentMessage([
+        attachment(image),
+        attachment(payload, {
+          mime_type: "",
+          transfer_name: "synthetic.pluginpayloadattachment",
+        }),
+      ]),
+    ]),
+  );
+  const handler = surface(runner);
+  const response = await media(handler, "1:28:0");
+  expect(response.status).toBe(200);
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+    new Uint8Array([1, 2, 3, 4]),
+  );
+  expect(Object.fromEntries(response.headers)).toMatchObject({
+    "content-type": "image/jpeg",
+    "content-disposition":
+      "inline; filename=\"synthetic.jpg\"; filename*=UTF-8''synthetic.jpg",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, max-age=86400",
+  });
+  const untyped = await media(handler, "1:28:1");
+  expect(untyped.status).toBe(200);
+  expect(untyped.headers.get("content-type")).toBe("application/octet-stream");
+  expect(untyped.headers.get("content-disposition")).toBe(
+    "attachment; filename=\"synthetic.pluginpayloadattachment\"; filename*=UTF-8''synthetic.pluginpayloadattachment",
+  );
+  expect(new Uint8Array(await untyped.arrayBuffer())).toEqual(
+    new Uint8Array([5, 6]),
+  );
+  expect(calls).toEqual([
+    ["history", "--chat-id", "1", "--limit", "100", "--attachments", "--json"],
+    ["history", "--chat-id", "1", "--limit", "100", "--attachments", "--json"],
+  ]);
+});
+
+test("a media id whose file is gone or unreadable is NOT_FOUND", async () => {
+  const gone = join(syntheticDirectory(), "synthetic.jpg");
+  const unreadable = syntheticFile([1, 2, 3]);
+  chmodSync(unreadable, 0o000);
+  for (const path of [gone, unreadable]) {
+    const { runner } = scripted(lines([attachmentMessage([attachment(path)])]));
+    const response = await media(surface(runner), "1:28:0");
+    expect(response.status).toBe(404);
+    expect((await response.json()).error.code).toBe("NOT_FOUND");
+  }
+});
+
+test("a media open that fails for another reason is unknown, not absent", async () => {
+  const { runner } = scripted(
+    lines([attachmentMessage([attachment("/synthetic/\u0000.jpg")])]),
+  );
+  const response = await media(surface(runner), "1:28:0");
+  expect(response.status).toBe(500);
+  expect((await response.json()).error.code).toBe("INTERNAL");
+});
+
+test("a media id the adapter did not write names nothing", async () => {
+  const { runner, calls } = scripted();
+  const handler = surface(runner);
+  const ids = [
+    "synthetic",
+    "1:28",
+    "1:28:0:9",
+    "0:28:0",
+    "1:0:0",
+    "1:28:-1",
+    `1:28:${"9".repeat(400)}`,
+  ];
+  for (const id of ids) {
+    const response = await media(handler, id);
+    expect(response.status).toBe(404);
+    expect((await response.json()).error.code).toBe("NOT_FOUND");
+  }
+  expect(calls).toEqual([]);
+});
+
+test("a media id naming a row or a position the chat does not have is NOT_FOUND", async () => {
+  const file = syntheticFile([1]);
+  const { runner } = scripted(
+    lines([attachmentMessage([attachment(file)])]),
+    lines([attachmentMessage([attachment(file)])]),
+  );
+  const handler = surface(runner);
+  expect((await media(handler, "1:28:1")).status).toBe(404);
+  expect((await media(handler, "1:999:0")).status).toBe(404);
+});
+
+test("a read the client already gave up on hands over nothing", async () => {
+  const file = syntheticFile([1, 2, 3]);
+  const { runner } = scripted(lines([attachmentMessage([attachment(file)])]));
+  const opened = await present(imessageBackend(runner).media)(
+    "1:28:0",
+    AbortSignal.abort(),
+  );
+  expect((await opened.body.getReader().read()).done).toBe(true);
+});
+
+test("aborting mid-read stops before the next chunk is read", async () => {
+  const size = 200 * 1024;
+  const file = syntheticFile(new Array(size).fill(7));
+  const { runner } = scripted(lines([attachmentMessage([attachment(file)])]));
+  const controller = new AbortController();
+  const opened = await present(imessageBackend(runner).media)(
+    "1:28:0",
+    controller.signal,
+  );
+  const reader = opened.body.getReader();
+  const first = await reader.read();
+  expect(first.done).toBe(false);
+  const delivered = first.value?.length ?? 0;
+  expect(delivered).toBeGreaterThan(0);
+  expect(delivered).toBeLessThan(size);
+  controller.abort();
+  expect((await reader.read()).done).toBe(true);
 });

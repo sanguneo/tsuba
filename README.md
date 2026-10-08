@@ -28,7 +28,7 @@
 - `adapters/telegram` — mtcute 기반 사용자 계정 클라이언트. 방 목록(방별 쓰기 가능 여부 포함), 이전 메시지, 첨부, 커서 스트림(수정·삭제·반응 포함), 텍스트 전송과 답장, 수정, 삭제, 반응, 읽음 처리
 - `adapters/discord` — discord.js 기반 **봇 계정**. 봇을 초대한 서버의 일반 텍스트 채널, 이전 메시지, 첨부, 커서 스트림(수정·삭제·반응 포함), 전송과 답장, 수정, 삭제, 반응
 - `adapters/slack` — 공식 사용자 토큰과 Socket Mode 로 **내 계정**. 채널·비공개 채널·DM·그룹 DM, 이전 메시지, 첨부, 커서 스트림(수정·삭제·반응 포함), 전송과 답장(스레드+채널), 수정, 삭제, 반응, 읽음 처리
-- `adapters/imessage` — macOS 의 Messages.app 을 서드파티 `imsg` CLI 로 감싼 **내 계정**(`imsg` 에 Full Disk Access 필요). 방 목록(다이렉트·그룹), 이전 메시지, 커서 스트림, 텍스트 전송. 수정·삭제·반응·읽음·첨부·파일 보내기는 없음
+- `adapters/imessage` — macOS 의 Messages.app 을 서드파티 `imsg` CLI 로 감싼 **내 계정**(`imsg` 에 Full Disk Access 필요). 방 목록(다이렉트·그룹), 이전 메시지, 첨부 읽기(`/media`), 커서 스트림, 텍스트 전송. 수정·삭제·반응·읽음·파일 보내기는 없음
 - `docs/telegram.md`, `docs/discord.md`, `docs/slack.md`, `docs/discord-user.md`, `docs/imessage.md` — 실행 방법과 구현된 기능/한계
 - `docs/references.md` — 구현 전에 검토한 참고 저장소와 가져올 것
 
