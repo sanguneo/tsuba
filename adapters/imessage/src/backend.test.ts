@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { createHandler } from "@tsuba/serve-kit";
-import { type ImsgRun, type ImsgRunner, imessageBackend } from "./backend";
+import { bounded, deferred } from "../../../tests/harness/barriers";
+import {
+  type ImsgRun,
+  type ImsgRunner,
+  type ImsgWatcher,
+  type ImsgWatchSpawner,
+  imessageBackend,
+} from "./backend";
 import { capabilities } from "./capabilities";
 
 const TOKEN = "synthetic-test-token-0123456789";
@@ -93,11 +100,11 @@ function scripted(...answers: ImsgRun[]) {
   return { runner, calls };
 }
 
-function surface(runner: ImsgRunner) {
+function surface(runner: ImsgRunner, spawner?: ImsgWatchSpawner) {
   return createHandler({
     token: TOKEN,
     capabilities: capabilities(),
-    backend: imessageBackend(runner),
+    backend: imessageBackend(runner, spawner),
   });
 }
 
@@ -126,19 +133,124 @@ function send(
   );
 }
 
-test("declares rooms, reads and sends, and nothing it cannot do", () => {
+const WATCH_ROWS = [
+  {
+    id: 41,
+    chat_id: 1,
+    sender: "+10000000009",
+    is_from_me: false,
+    text: "synthetic four",
+    created_at: "2024-01-01T00:00:40.000Z",
+  },
+  {
+    id: 42,
+    chat_id: 2,
+    sender: "",
+    is_from_me: true,
+    text: "synthetic five",
+    created_at: "2024-01-01T00:00:50.000Z",
+  },
+];
+
+/** A fake `imsg watch`: the test writes its lines and decides when it exits. */
+class FakeWatcher implements ImsgWatcher {
+  private readonly listeners: ((line: string) => void)[] = [];
+  private readonly ended = deferred<number>();
+  readonly exited = this.ended.promise;
+  stopped = false;
+  constructor(readonly args: string[]) {}
+  onLine(listener: (line: string) => void) {
+    this.listeners.push(listener);
+  }
+  emit(line: string) {
+    for (const listener of this.listeners) listener(line);
+  }
+  die(code = 0) {
+    this.ended.resolve(code);
+  }
+  stop() {
+    this.stopped = true;
+  }
+}
+
+function watchers() {
+  const spawned: FakeWatcher[] = [];
+  const arrivals: (() => void)[] = [];
+  const spawner: ImsgWatchSpawner = (args) => {
+    const watcher = new FakeWatcher(args);
+    spawned.push(watcher);
+    for (const arrive of arrivals.splice(0)) arrive();
+    return watcher;
+  };
+  /** The watcher with this index, waited for under a bounded deadline. */
+  const at = async (index: number) => {
+    if (spawned.length <= index)
+      await bounded(
+        new Promise<void>((resolve) => arrivals.push(resolve)),
+        `imsg watch spawn #${index + 1}`,
+      );
+    const watcher = spawned[index];
+    if (!watcher) throw new Error(`No imsg watch spawn #${index + 1}`);
+    return watcher;
+  };
+  return { spawner, at };
+}
+
+function stream(handler: ReturnType<typeof surface>, query = "") {
+  return handler.handle(
+    new Request(`http://synthetic/stream${query}`, { headers: BEARER }),
+  );
+}
+
+/** Reads an SSE response frame by frame, each read bounded by a deadline. */
+async function opened(response: Response) {
+  const body = response.body;
+  if (!body) throw new Error("Missing SSE body");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  return {
+    text: () => text,
+    async until(marker: string, count = 1) {
+      const seen = () => text.split(marker).length - 1;
+      while (!(seen() >= count && text.endsWith("\n\n"))) {
+        const chunk = await bounded(reader.read(), `SSE frame for ${marker}`);
+        if (chunk.done) throw new Error(`The stream ended before ${marker}`);
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      return text;
+    },
+    close: () => reader.cancel(),
+  };
+}
+
+function frames(text: string) {
+  return text
+    .trim()
+    .split("\n\n")
+    .map((frame) => {
+      const [event, data] = frame.split("\n");
+      if (!event || !data) throw new Error("Malformed SSE frame");
+      return { event: event.slice(7), data: JSON.parse(data.slice(6)) };
+    });
+}
+
+test("declares rooms, reads, streams and sends, and nothing it cannot do", () => {
   const declared = capabilities();
   expect(declared.provider).toEqual({ id: "imessage", name: "iMessage" });
   expect(declared.account.kind).toBe("user");
   expect(Object.keys(declared.features).sort()).toEqual([
     "messages.read",
     "messages.send",
+    "messages.stream",
     "rooms.list",
   ]);
   expect(declared.features["messages.read"]).toEqual({
     paging: "before-id",
     maxLimit: 100,
   });
+  // `message` is a base event, so `events` names none and must stay absent.
+  expect(declared.features["messages.stream"]).toEqual({ resume: "cursor" });
   expect(declared.features["messages.send"]).toEqual({
     maxLength: 20_000,
     receipt: "stored",
@@ -355,4 +467,133 @@ test("ids that are not rowids are refused before imsg runs", async () => {
     404,
   );
   expect(calls).toEqual([]);
+});
+
+test("a stream answers each watched line as a message event", async () => {
+  const { spawner, at } = watchers();
+  const handler = surface(scripted().runner, spawner);
+  const response = await stream(handler);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("text/event-stream");
+  const sse = await opened(response);
+  await sse.until("event: ready\n");
+  const watcher = await at(0);
+  expect(watcher.args).toEqual(["watch", "--json"]);
+  watcher.emit(JSON.stringify(WATCH_ROWS[0]));
+  const seen = frames(await sse.until("event: message\n"));
+  expect(seen.map((frame) => frame.event)).toEqual(["ready", "message"]);
+  expect(seen[0]?.data).toMatchObject({ resumed: false, cursor: {} });
+  expect(seen.at(-1)?.data).toEqual({
+    ok: true,
+    message: {
+      id: "41",
+      roomId: "1",
+      senderId: "+10000000009",
+      sender: "+10000000009",
+      text: "synthetic four",
+      kind: "text",
+      sentAt: "2024-01-01T00:00:40.000Z",
+      fromMe: false,
+    },
+  });
+  await sse.close();
+  expect(watcher.stopped).toBe(true);
+  handler.stop();
+});
+
+test("an unreadable watch line is dropped and the stream lives on", async () => {
+  const { spawner, at } = watchers();
+  const handler = surface(scripted().runner, spawner);
+  const sse = await opened(await stream(handler));
+  await sse.until("event: ready\n");
+  const watcher = await at(0);
+  watcher.emit("{ not json at all");
+  watcher.emit("[1,2,3]");
+  watcher.emit(JSON.stringify(WATCH_ROWS[1]));
+  const seen = frames(await sse.until("event: message\n"));
+  expect(seen.map((frame) => frame.event)).toEqual(["ready", "message"]);
+  expect(seen.at(-1)?.data).toMatchObject({
+    message: {
+      id: "42",
+      roomId: "2",
+      sender: "me",
+      senderId: "me",
+      fromMe: true,
+    },
+  });
+  await sse.close();
+  handler.stop();
+});
+
+test("a watcher that dies is restarted past the last rowid, not the stream", async () => {
+  const { spawner, at } = watchers();
+  const handler = surface(scripted().runner, spawner);
+  const sse = await opened(await stream(handler));
+  await sse.until("event: ready\n");
+  const first = await at(0);
+  first.emit(JSON.stringify(WATCH_ROWS[0]));
+  await sse.until("event: message\n");
+  const restarted = at(1);
+  first.die(1);
+  const second = await restarted;
+  expect(second.args).toEqual(["watch", "--json", "--since-rowid", "41"]);
+  second.emit(JSON.stringify(WATCH_ROWS[1]));
+  const seen = frames(await sse.until("event: message\n", 2));
+  expect(seen.filter((frame) => frame.event === "error")).toEqual([]);
+  expect(seen.at(-1)?.data).toMatchObject({ message: { id: "42" } });
+  await sse.close();
+  handler.stop();
+});
+
+test("canceling the stream stops the watcher", async () => {
+  const { spawner, at } = watchers();
+  const handler = surface(scripted().runner, spawner);
+  const sse = await opened(await stream(handler));
+  await sse.until("event: ready\n");
+  const watcher = await at(0);
+  expect(watcher.stopped).toBe(false);
+  await sse.close();
+  expect(watcher.stopped).toBe(true);
+  handler.stop();
+});
+
+test("a resumed cursor sends what the room got after it", async () => {
+  const { runner, calls } = scripted(lines(MESSAGES.slice(0, 3)));
+  const { spawner } = watchers();
+  const handler = surface(runner, spawner);
+  const sse = await opened(await stream(handler, "?since=1:28"));
+  const seen = frames(await sse.until("event: cursor\n"));
+  expect(seen.map((frame) => frame.event)).toEqual([
+    "ready",
+    "message",
+    "message",
+    "cursor",
+  ]);
+  expect(seen[0]?.data).toMatchObject({ resumed: true, cursor: { "1": "28" } });
+  expect(
+    seen
+      .filter((frame) => frame.event === "message")
+      .map((frame) => frame.data.message.id),
+  ).toEqual(["29", "30"]);
+  expect(seen.at(-1)?.data).toEqual({ ok: true, cursor: { "1": "30" } });
+  expect(calls).toEqual([
+    ["history", "--chat-id", "1", "--limit", "100", "--json"],
+  ]);
+  await sse.close();
+  handler.stop();
+});
+
+test("a cursor that is not a rowid is refused, not taken as now", async () => {
+  const { runner, calls } = scripted();
+  const { spawner } = watchers();
+  const handler = surface(runner, spawner);
+  const sse = await opened(await stream(handler, "?since=1:synthetic"));
+  const seen = frames(await sse.until("event: error\n"));
+  expect(seen.at(-1)?.data).toEqual({
+    ok: false,
+    error: { code: "INVALID_REQUEST", message: "Invalid message id" },
+  });
+  expect(calls).toEqual([]);
+  await sse.close();
+  handler.stop();
 });

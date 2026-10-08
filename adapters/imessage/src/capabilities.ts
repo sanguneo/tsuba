@@ -10,7 +10,7 @@ import adapterPackage from "../package.json";
  */
 const MAX_TEXT = 20_000;
 
-/** Only what the adapter does end to end: no stream, edits, reactions or files. */
+/** Only what the adapter does end to end: no edits, reactions or files. */
 export function capabilities(): Capabilities {
   return {
     provider: { id: "imessage", name: "iMessage" },
@@ -19,6 +19,8 @@ export function capabilities(): Capabilities {
     features: {
       "rooms.list": {},
       "messages.read": { paging: "before-id", maxLimit: 100 },
+      // `message` is a base event every stream sends, so `events` names none.
+      "messages.stream": { resume: "cursor" },
       "messages.send": { maxLength: MAX_TEXT, receipt: "stored" },
     },
   };

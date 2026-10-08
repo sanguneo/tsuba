@@ -6,8 +6,9 @@ iMessage 에는 SDK 도 네트워크 API 도 없어서 `imsg` 가 유일한 접�
 `serve` 는 시작할 때 `adapters/imessage/icon.svg` 를 한 번 읽어 `/icon` 으로 답하고
 `provider.icon` 에 바이트 버전을 알립니다(0.2.5).
 
-계약의 방 목록, 메시지 읽기(이전 id 페이징), 텍스트 전송만 구현했습니다. 합성 데이터와
-로컬 HTTP 로 검증하며, 실제 계정에서의 검증은 운영자가 별도로 합니다.
+계약의 방 목록, 메시지 읽기(이전 id 페이징), 실시간 수신(커서 스트림), 텍스트 전송을
+구현했습니다. 합성 데이터와 로컬 HTTP 로 검증하며, 실제 계정에서의 검증은 운영자가
+별도로 합니다.
 
 ## 기반: imsg
 
@@ -16,6 +17,10 @@ iMessage 에는 SDK 도 네트워크 API 도 없어서 `imsg` 가 유일한 접�
   (Intel Mac 의 Homebrew 는 `/usr/local/bin`).
 - `imsg chats --json` 과 `imsg history --json` 은 **JSON 배열이 아니라 한 줄에 하나씩**
   냅니다(NDJSON). 어댑터는 줄 단위로 읽습니다.
+- `imsg watch --json` 도 한 줄에 하나씩 흘려보내고, 사람이 읽는 출력은 **stderr** 로
+  보냅니다. `--since-rowid <n>` 은 그 행번호 **뒤**부터 시작하고(배타적), 주지 않으면 그
+  순간의 최신 행부터 시작합니다. 어댑터는 이것으로 스트림을 만들고, 워처가 죽으면 마지막
+  행 뒤부터 다시 붙입니다. `watch` 는 SIP 를 끄지 않아도 되는 basic-tier 명령입니다.
 - `imsg send --json` 은 `{"status":"sent"}` 만 답하고 전송된 메시지의 id 는 주지 않습니다.
   그래서 어댑터가 전송 뒤 그 방의 최근 행을 되읽어 답을 채우고, `messages.send.receipt`
   는 `stored` 입니다. `imsg` 자신이 AppleScript 전송을 `chat.db` 의 발신 행과 대조해
@@ -70,11 +75,32 @@ TSUBA_TOKEN=... bun adapters/imessage/src/cli.ts serve
 | --- | --- | --- |
 | `rooms.list` | `{}` | `imsg chats --limit 251 --json`. 최신 활동 순으로 정렬. 250개까지 답하고 251번째 행으로 초과 여부를 확인 |
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | `imsg history --chat-id <rowid> --limit n --json`. 오래된 순서로 반환. 어댑터의 읽기 상한은 100개 |
+| `messages.stream` | `resume: cursor` | `imsg watch --json`. 새 메시지마다 `message` 이벤트. 이어 읽기는 `since=<roomId>:<messageId>` 로 그 행 뒤를 채움. `message` 는 모든 스트림이 보내는 기본 이벤트라 `events` 를 비워 둠 |
 | `messages.send` | `maxLength: 20000`, `receipt: stored` | `imsg send --chat-id <rowid> --text <본문> --json`. `sent` 를 확인한 뒤 저장된 행을 되읽어 답함 |
 
-스트림, 수정, 삭제, 반응, 읽음 처리, 첨부, 아바타, 파일 보내기는 신고하지 않습니다.
+수정, 삭제, 반응, 읽음 처리, 첨부, 아바타, 파일 보내기는 신고하지 않습니다.
 쓰기는 serve-kit 의 줄 하나를 함께 쓰며, 한 번에 하나씩 실행 중 요청을 포함해 최대 4개만
 받아들이고 5번째는 즉시 429 입니다.
+
+## 실시간 수신 (스트림)
+
+`imsg watch` 는 **이 Mac 의 `chat.db` 를 지켜보며** Messages 가 새로 쓰는 행을 그대로
+흘려보냅니다. 계정에 도착한 것을 네트워크에서 받아오는 것이 아니라 **이 Mac 의 Messages
+가 받은 것**을 로컬 데이터베이스에서 읽습니다.
+
+- 새 메시지마다 `message` 이벤트를 보냅니다. 수정·삭제·반응은 `imsg` 가 안정적으로
+  알려주지 않아 신고하지 않습니다(`--reactions` 를 쓰지 않습니다).
+- **이어 읽기**: 클라이언트가 `since=<roomId>:<messageId>` 로 마지막 커서를 되돌려 주면,
+  어댑터는 그 id **뒤**의 행을 `imsg history` 로 채워 보낸 뒤 실시간으로 넘어갑니다.
+  `imsg history` 에는 id 로 앞으로 페이징하는 옵션이 없어, 최신 행부터 `--end` 로 뒤로
+  걸어가며 커서보다 새것을 모읍니다. 커서로 쓸 수 없는 id 는 지금부터 시작하지 않고
+  거절합니다.
+- **워처가 죽으면** 스트림을 끝내지 않고 마지막으로 넘긴 행 뒤(`--since-rowid`)부터 다시
+  붙입니다(1초에서 30초까지 지수 백오프). `imsg` 가 없거나 권한이 없어 스폰이 실패해도 같은
+  방식으로 다시 시도합니다.
+- 읽을 수 없는 줄(깨진 JSON 등)은 **버립니다.** 스트림에는 그것을 알릴 오류 채널이 없고,
+  한 줄 때문에 실시간 수신을 끊는 편이 더 나쁘기 때문입니다.
+- 스트림은 serve-kit 이 어댑터마다 8개까지 받습니다. 넘으면 `503 BUSY` 입니다.
 
 ## 이전 메시지 페이징
 
@@ -113,6 +139,7 @@ stderr). 어댑터는 두 스트림을 함께 보고 위 표대로 옮깁니다.
   그 방의 최근 10개에서 보낸 행을 찾습니다. 찾지 못하면 전송은 확인됐지만 답을 만들 수
   없어 `500 INTERNAL` 입니다.
 - **첨부가 있는 메시지도 `kind: "text"` 로 옵니다.** 본문이 빈 문자열일 수 있습니다.
+  스트림(`imsg watch`)도 같은 매퍼를 쓰므로 마찬가지입니다.
 - `messages.send.maxLength` 는 Apple 이 문서로 정한 값이 아닙니다. 20,000 코드 포인트를
   보수적 상한으로 신고하며, 출처와 근거는 `src/capabilities.ts` 주석에 있습니다.
 - **`imsg` 의 나머지 명령을 쓰지 않습니다.** `react`·`read`·`typing`·`send-rich` 는 SIP 를

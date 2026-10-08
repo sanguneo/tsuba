@@ -5,6 +5,7 @@ import {
   type Message,
   type ReadMessagesRequest,
   type Room,
+  type StreamUpdate,
 } from "@tsuba/serve-kit";
 
 /** Homebrew's prefix on Apple Silicon; an Intel install is under /usr/local. */
@@ -15,6 +16,9 @@ const MAX_LIMIT = 100;
 const ROOM_LIMIT = 250;
 /** How far back a just-sent message is looked for; imsg verified it landed. */
 const READ_BACK = 10;
+/** A dead watcher is restarted after this long, doubling up to half a minute. */
+const RETRY_BASE_MS = 1000;
+const RETRY_CAP_MS = 30_000;
 
 export interface ImsgRun {
   stdout: string;
@@ -55,6 +59,50 @@ async function spawn(args: string[]): Promise<ImsgRun> {
   return { stdout, stderr, exitCode };
 }
 
+/** One long-lived `imsg watch`: its NDJSON lines as they arrive, and how it ends. */
+export interface ImsgWatcher {
+  onLine(listener: (line: string) => void): void;
+  /** Settles with the exit code when the watcher process ends. */
+  exited: Promise<number>;
+  stop(): void;
+}
+
+/** One `imsg watch` invocation; the tests pass a fake so no real Messages data is read. */
+export type ImsgWatchSpawner = (args: string[]) => ImsgWatcher;
+
+function spawnWatcher(args: string[]): ImsgWatcher {
+  const child = Bun.spawn([IMSG, ...args], { stdout: "pipe", stderr: "pipe" });
+  const listeners: ((line: string) => void)[] = [];
+  void (async () => {
+    const decoder = new TextDecoder();
+    const reader = child.stdout.getReader();
+    let buffered = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffered += decoder.decode(value, { stream: true });
+      let end = buffered.indexOf("\n");
+      while (end >= 0) {
+        const line = buffered.slice(0, end);
+        buffered = buffered.slice(end + 1);
+        for (const listener of listeners) listener(line);
+        end = buffered.indexOf("\n");
+      }
+    }
+  })();
+  // imsg writes its human output to stderr; drained so a full pipe cannot block it.
+  void new Response(child.stderr).text();
+  return {
+    onLine(listener) {
+      listeners.push(listener);
+    },
+    exited: child.exited,
+    stop() {
+      child.kill();
+    },
+  };
+}
+
 /**
  * The refusals `imsg` states, as a sentence with a nonzero exit (mostly on
  * stdout; the SQLite one on stderr). Full Disk Access and Automation are grants
@@ -87,6 +135,25 @@ function refused(text: string): AdapterError {
   for (const [pattern, code, message] of REFUSALS)
     if (pattern.test(text)) return new AdapterError(code, message);
   return new AdapterError("INTERNAL", "imsg failed");
+}
+
+/**
+ * One `imsg watch` line as a row. A line the adapter cannot read is dropped
+ * rather than raised: serve-kit's only error event ends the stream, so raising
+ * one unreadable line would trade a live stream for a detail nobody can act on.
+ */
+function watched(line: string): ImsgMessage | undefined {
+  if (!line.trim()) return undefined;
+  let row: unknown;
+  try {
+    row = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!row || typeof row !== "object" || Array.isArray(row)) return undefined;
+  const { id, chat_id } = row as { id?: unknown; chat_id?: unknown };
+  if (typeof id !== "number" || typeof chat_id !== "number") return undefined;
+  return row as ImsgMessage;
 }
 
 /** `imsg --json` writes one object per line, never one document. */
@@ -163,11 +230,16 @@ function byNewest(left: Room, right: Room): number {
  * The Mac's own Messages account behind the contract, through the third-party
  * `imsg` CLI: it reads `~/Library/Messages/chat.db` and sends through
  * Messages.app, and the first of those needs Full Disk Access (docs/imessage.md).
- * Rooms are the conversations in that database, direct and group alike. There is
- * no iMessage SDK, so nothing else is reachable: no stream, edits, reactions or
- * files, and imsg's own commands for those need SIP off or are unbuilt.
+ * Rooms are the conversations in that database, direct and group alike. The
+ * stream is `imsg watch` on the same file, so it sees what this Mac's Messages
+ * receives and nothing a different device received. There is no iMessage SDK,
+ * so nothing else is reachable: no edits, reactions or files, and imsg's own
+ * commands for those need SIP off or are unbuilt.
  */
-export function imessageBackend(runner: ImsgRunner = spawn): AdapterBackend {
+export function imessageBackend(
+  runner: ImsgRunner = spawn,
+  watcher: ImsgWatchSpawner = spawnWatcher,
+): AdapterBackend {
   async function imsg(args: string[]): Promise<ImsgRun> {
     const result = await runner(args);
     if (result.exitCode === 0) return result;
@@ -240,6 +312,84 @@ export function imessageBackend(runner: ImsgRunner = spawn): AdapterBackend {
       return {
         messages: seen.slice(0, limit).reverse().map(message),
         hasEarlier: seen.length > limit,
+      };
+    },
+
+    async messagesAfter(roomId, afterId) {
+      const chat = chatId(roomId);
+      const after = messageId(afterId);
+      const newer: ImsgMessage[] = [];
+      const known = new Set<string>();
+      let end: string | undefined;
+      // imsg pages by timestamp, not by id, so walk back from the newest row
+      // until a row at or below the cursor proves everything newer is in hand.
+      while (true) {
+        const batch = await history(chat, MAX_LIMIT, end);
+        if (!batch.length) break;
+        let reached = false;
+        for (const row of batch) {
+          const key = String(row.id);
+          if (known.has(key)) continue;
+          known.add(key);
+          if (row.id > after) newer.push(row);
+          else reached = true;
+        }
+        const oldest = batch[batch.length - 1];
+        if (reached || batch.length < MAX_LIMIT || !oldest?.created_at) break;
+        end = oldest.created_at;
+      }
+      newer.sort((left, right) => left.id - right.id);
+      return newer.map(message);
+    },
+
+    subscribe(listener: (update: StreamUpdate) => void) {
+      let stopped = false;
+      let failures = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let live: ImsgWatcher | undefined;
+      let cursor: number | undefined;
+      const read = (line: string) => {
+        const row = watched(line);
+        if (!row) return;
+        failures = 0;
+        if (cursor === undefined || row.id > cursor) cursor = row.id;
+        listener({ event: "message", message: message(row) });
+      };
+      function later() {
+        if (stopped) return;
+        failures += 1;
+        timer = setTimeout(
+          open,
+          Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** Math.min(failures, 5)),
+        );
+      }
+      function open() {
+        if (stopped) return;
+        let child: ImsgWatcher;
+        try {
+          child = watcher([
+            "watch",
+            "--json",
+            ...(cursor === undefined ? [] : ["--since-rowid", String(cursor)]),
+          ]);
+        } catch {
+          return later();
+        }
+        live = child;
+        child.onLine(read);
+        // imsg watch exits with the database it reads; a restart resumes strictly
+        // after the last row handed over, so the stream outlives one exit intact.
+        void child.exited.then(() => {
+          if (stopped || live !== child) return;
+          later();
+        });
+      }
+      open();
+      return () => {
+        stopped = true;
+        clearTimeout(timer);
+        live?.stop();
+        live = undefined;
       };
     },
 
