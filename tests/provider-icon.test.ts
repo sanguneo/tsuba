@@ -183,7 +183,13 @@ test("construction refuses icons above 64 KiB, but accepts the boundary", () => 
   ).not.toThrow();
 });
 
-for (const adapter of ["telegram", "slack", "discord", "discord-user"]) {
+for (const adapter of [
+  "telegram",
+  "slack",
+  "discord",
+  "discord-user",
+  "imessage",
+]) {
   test(`${adapter}'s shipped SVG passes construction`, async () => {
     const bytes = new Uint8Array(
       await Bun.file(

@@ -26,6 +26,13 @@
         "@tsuba/serve-kit": "workspace:*",
       },
     },
+    "adapters/imessage": {
+      "name": "@tsuba/imessage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tsuba/serve-kit": "workspace:*",
+      },
+    },
     "adapters/slack": {
       "name": "@tsuba/slack",
       "version": "0.0.0",
@@ -109,6 +116,8 @@
     "@tsuba/discord": ["@tsuba/discord@workspace:adapters/discord"],
 
     "@tsuba/discord-user": ["@tsuba/discord-user@workspace:adapters/discord-user"],
+
+    "@tsuba/imessage": ["@tsuba/imessage@workspace:adapters/imessage"],
 
     "@tsuba/serve-kit": ["@tsuba/serve-kit@workspace:packages/serve-kit"],
 

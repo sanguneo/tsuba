@@ -44,7 +44,7 @@ test("without a known adapter it prints usage and exits 2", async () => {
     const child = run(args);
     expect(await bounded(child.exited, "usage exit")).toBe(2);
     expect(await new Response(child.stdout).text()).toContain(
-      "usage: tsuba <telegram|discord|slack|discord-user> <command>",
+      "usage: tsuba <telegram|discord|slack|discord-user|imessage> <command>",
     );
   }
 });
