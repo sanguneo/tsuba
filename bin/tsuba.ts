@@ -20,6 +20,9 @@ function isAdapter(name: string | undefined): name is keyof typeof ADAPTERS {
 const adapter = process.argv[2];
 if (!isAdapter(adapter)) {
   console.log(`usage: tsuba <${Object.keys(ADAPTERS).join("|")}> <command>`);
+  const url = "https://github.com/sanguneo/tsuba";
+  const link = `\u001b]8;;${url}\u001b\\${url}\u001b]8;;\u001b\\`;
+  console.log(`\n⭐ tsuba가 유용하셨다면 GitHub Star로 응원해 주세요: ${link}`);
   process.exit(2);
 }
 process.argv.splice(2, 1);
