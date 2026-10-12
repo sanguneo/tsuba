@@ -28,6 +28,7 @@ bun run test
 | `contract/CHANGELOG.md` | Every contract version and why it changed |
 | `packages/serve-kit/` | What every adapter shares: envelope, auth, routing, capabilities, `/media` headers |
 | `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram` and `slack` as the user, `discord` as a bot) |
+| `examples/memo/` | The minimal adapter `docs/custom-adapter.md` walks through; typechecked and tested, not shipped |
 | `docs/contract.md` | The contract's rules in one place, and every name in use or reserved |
 | `docs/` | Also the per-adapter notes, deployment and the reference review |
 | `tests/` | `bun test` suites; `tests/harness/` holds the no-sleep helpers |
