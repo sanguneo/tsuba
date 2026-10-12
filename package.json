@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram && tsc --noEmit -p adapters/discord && tsc --noEmit -p adapters/slack && tsc --noEmit -p adapters/discord-user && tsc --noEmit -p bin",
     "lint": "biome check .",
     "test": "bun test",
-    "compile": "bun build --compile --minify bin/tsuba.ts --outfile dist/tsuba"
+    "compile": "bun build --compile --minify bin/tsuba.ts --outfile dist/tsuba",
+    "postinstall": "bun scripts/postinstall.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

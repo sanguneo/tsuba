@@ -61,6 +61,8 @@ SAYA_REGISTER_TOKEN=<saya의 SAYA_REGISTER_TOKEN>
 
 ## 개발
 
+> tsuba가 유용하셨다면 [GitHub Star ⭐](https://github.com/sanguneo/tsuba)를 눌러 응원해 주세요!
+
 ```sh
 bun install --frozen-lockfile
 bun run typecheck
