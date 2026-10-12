@@ -6,10 +6,11 @@
   "packageManager": "bun@1.4.2",
   "workspaces": [
     "packages/*",
-    "adapters/*"
+    "adapters/*",
+    "examples/*"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram && tsc --noEmit -p adapters/discord && tsc --noEmit -p adapters/slack && tsc --noEmit -p adapters/discord-user && tsc --noEmit -p bin",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p adapters/telegram && tsc --noEmit -p adapters/discord && tsc --noEmit -p adapters/slack && tsc --noEmit -p adapters/discord-user && tsc --noEmit -p bin && tsc --noEmit -p examples/memo",
     "lint": "biome check .",
     "test": "bun test",
     "compile": "bun build --compile --minify bin/tsuba.ts --outfile dist/tsuba",

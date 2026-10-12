@@ -42,6 +42,13 @@
         "@tsuba/serve-kit": "workspace:*",
       },
     },
+    "examples/memo": {
+      "name": "@tsuba/memo",
+      "version": "0.1.0",
+      "dependencies": {
+        "@tsuba/serve-kit": "workspace:*",
+      },
+    },
     "packages/serve-kit": {
       "name": "@tsuba/serve-kit",
       "version": "0.0.0",
@@ -109,6 +116,8 @@
     "@tsuba/discord": ["@tsuba/discord@workspace:adapters/discord"],
 
     "@tsuba/discord-user": ["@tsuba/discord-user@workspace:adapters/discord-user"],
+
+    "@tsuba/memo": ["@tsuba/memo@workspace:examples/memo"],
 
     "@tsuba/serve-kit": ["@tsuba/serve-kit@workspace:packages/serve-kit"],
 

@@ -1,0 +1,9 @@
+{
+  "name": "@tsuba/memo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tsuba/serve-kit": "workspace:*"
+  }
+}

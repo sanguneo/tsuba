@@ -59,6 +59,12 @@ SAYA_REGISTER_TOKEN=<saya의 SAYA_REGISTER_TOKEN>
 지웁니다. 새 어댑터도 `serve()`를 쓰면 따로 할 일이 없습니다. 자세한 것은
 [`docs/deployment.md`](docs/deployment.md)의 「saya 에 등록하기」.
 
+## 내 메신저 붙이기
+
+여기 없는 메신저도 어댑터를 하나 쓰면 saya 에 나란히 그려집니다. 처음부터 saya 에 붙이기까지의
+순서는 [`docs/custom-adapter.md`](docs/custom-adapter.md), 그대로 띄워 볼 수 있는 예제는
+[`examples/memo`](examples/memo) 입니다. TypeScript 가 아니어도 계약에 답하고 saya 에 등록하면 됩니다.
+
 ## 개발
 
 > tsuba가 유용하셨다면 [GitHub Star ⭐](https://github.com/sanguneo/tsuba)를 눌러 응원해 주세요!
