@@ -1,6 +1,13 @@
 import type { Message, Room } from "@tsuba/serve-kit";
 import { isRoomJid, mapMessage, mapRoom, shown, toSeconds } from "./mapping";
-import type { WaChat, WaContent, WaKey, WaMessageLike } from "./types";
+import type {
+  WaChat,
+  WaContact,
+  WaContent,
+  WaGroup,
+  WaKey,
+  WaMessageLike,
+} from "./types";
 
 const MESSAGES_PER_ROOM = 200;
 const ROOM_LIMIT = 500;
@@ -10,6 +17,12 @@ interface Entry {
   editedAt: number | null;
 }
 
+function personalJid(jid: string): string | undefined {
+  return isRoomJid(jid) && !jid.endsWith("@g.us")
+    ? jid.replace(/:\d+@/, "@")
+    : undefined;
+}
+
 /**
  * What this process has seen since it started: the chats and messages WhatsApp
  * pushed while syncing and while connected. Memory only; nothing is written to
@@ -17,7 +30,13 @@ interface Entry {
  */
 export class WaStore {
   private readonly chats = new Map<string, Omit<WaChat, "id">>();
-  private readonly names = new Map<string, string>();
+  private readonly names = new Map<
+    string,
+    { name: string | undefined; notify: string | undefined }
+  >();
+  private readonly aliases = new Map<string, Set<string>>();
+  private readonly pushNames = new Map<string, { name: string; at: number }>();
+  private readonly subjects = new Map<string, string>();
   private readonly messages = new Map<string, Map<string, Entry>>();
 
   setChats(chats: WaChat[]): void {
@@ -31,14 +50,38 @@ export class WaStore {
     }
   }
 
-  setNames(names: { id: string; name: string }[]): void {
-    for (const { id, name } of names) if (name) this.names.set(id, name);
+  setNames(names: WaContact[]): void {
+    for (const contact of names) {
+      const id = personalJid(contact.id);
+      if (!id) continue;
+      const ids = [id, contact.lid, contact.jid].flatMap((value) =>
+        value ? (personalJid(value) ?? []) : [],
+      );
+      const linked = new Set(
+        ids.flatMap((alias) => [...(this.aliases.get(alias) ?? [alias])]),
+      );
+      for (const alias of linked) this.aliases.set(alias, linked);
+      const known = this.names.get(id);
+      this.names.set(id, {
+        name: contact.name || known?.name,
+        notify: contact.notify || known?.notify,
+      });
+    }
+  }
+
+  setGroups(groups: WaGroup[]): void {
+    for (const { id, subject } of groups) {
+      if (!isRoomJid(id) || !id.endsWith("@g.us")) continue;
+      this.setChats([{ id }]);
+      if (subject) this.subjects.set(id, subject);
+    }
   }
 
   deleteChats(ids: string[]): void {
     for (const id of ids) {
       this.chats.delete(id);
       this.messages.delete(id);
+      this.subjects.delete(id);
     }
   }
 
@@ -47,6 +90,15 @@ export class WaStore {
     const roomId = raw.key.remoteJid;
     const id = raw.key.id;
     if (!mapped || !roomId || !id) return null;
+    const sender = personalJid(raw.key.participant ?? roomId);
+    const at = toSeconds(raw.messageTimestamp) ?? 0;
+    if (
+      sender &&
+      !raw.key.fromMe &&
+      raw.pushName &&
+      at >= (this.pushNames.get(sender)?.at ?? 0)
+    )
+      this.pushNames.set(sender, { name: raw.pushName, at });
     const room = this.messages.get(roomId) ?? new Map<string, Entry>();
     this.messages.set(roomId, room);
     room.set(id, { raw, editedAt: room.get(id)?.editedAt ?? null });
@@ -83,11 +135,19 @@ export class WaStore {
     const rooms = [...ids].map((id) => {
       const chat = this.chats.get(id) ?? {};
       const newest = this.page(id, 1).messages[0];
-      return mapRoom(
-        id,
-        { ...chat, name: chat.name ?? this.names.get(id) ?? null },
-        newest,
-      );
+      const personal = personalJid(id) ?? id;
+      const aliases = [...(this.aliases.get(personal) ?? [personal])];
+      const contacts = aliases.flatMap((alias) => this.names.get(alias) ?? []);
+      const pushed = aliases
+        .flatMap((alias) => this.pushNames.get(alias) ?? [])
+        .sort((left, right) => right.at - left.at)[0]?.name;
+      const name = id.endsWith("@g.us")
+        ? this.subjects.get(id) || chat.name
+        : contacts.find((contact) => contact.name)?.name ||
+          chat.name ||
+          contacts.find((contact) => contact.notify)?.notify ||
+          pushed;
+      return mapRoom(id, { ...chat, name: name ?? null }, newest);
     });
     rooms.sort(
       (left, right) =>

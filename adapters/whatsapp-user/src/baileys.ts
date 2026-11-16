@@ -6,7 +6,7 @@ import makeWASocket, {
   type WAMessage,
   WAMessageStubType,
 } from "@whiskeysockets/baileys";
-import type { WaSocket, WaSocketEvent } from "./types";
+import type { WaContact, WaGroup, WaSocket, WaSocketEvent } from "./types";
 
 export type BaileysEvents = BaileysEventMap;
 type SocketConfig = Parameters<typeof makeWASocket>[0];
@@ -20,6 +20,9 @@ export interface BaileysLike {
     ): void;
   };
   sendMessage: ReturnType<typeof makeWASocket>["sendMessage"];
+  groupFetchAllParticipating: ReturnType<
+    typeof makeWASocket
+  >["groupFetchAllParticipating"];
   end(error: Error | undefined): void;
 }
 
@@ -84,7 +87,15 @@ export function openBaileys({
     });
     socket.ev.on("connection.update", (update) => {
       if (update.qr) emit({ type: "qr", qr: update.qr });
-      if (update.connection === "open") emit({ type: "open" });
+      if (update.connection === "open") {
+        emit({ type: "open" });
+        // Baileys 6.7.24 emits groups.update with the fetched metadata itself.
+        // Keep a failed optional read separate from the connection state, and
+        // report only a safe signal: SDK errors can contain account data.
+        void socket
+          .groupFetchAllParticipating()
+          .catch(() => emit({ type: "groupSyncFailed" }));
+      }
       if (update.connection === "close")
         emit({
           type: "close",
@@ -112,6 +123,18 @@ export function openBaileys({
     socket.ev.on("contacts.update", (contacts) =>
       emit({ type: "names", names: contactNames(contacts) }),
     );
+    socket.ev.on("chats.phoneNumberShare", ({ lid, jid }) =>
+      emit({ type: "names", names: [{ id: lid, jid }] }),
+    );
+    const groups = (updates: Partial<WaGroup>[]) =>
+      emit({
+        type: "groups",
+        groups: updates.flatMap(({ id, ...rest }) =>
+          id ? [{ id, ...rest }] : [],
+        ),
+      });
+    socket.ev.on("groups.upsert", groups);
+    socket.ev.on("groups.update", groups);
     socket.ev.on("messages.upsert", ({ messages, type }) =>
       emit({ type: "messages", messages, live: type === "notify" }),
     );
@@ -158,11 +181,6 @@ export function openBaileys({
   };
 }
 
-function contactNames(
-  contacts: { id?: string; name?: string | null; notify?: string | null }[],
-): { id: string; name: string }[] {
-  return contacts.flatMap(({ id, name, notify }) => {
-    const shown = name ?? notify;
-    return id && shown ? [{ id, name: shown }] : [];
-  });
+function contactNames(contacts: Partial<WaContact>[]): WaContact[] {
+  return contacts.flatMap(({ id, ...rest }) => (id ? [{ id, ...rest }] : []));
 }
