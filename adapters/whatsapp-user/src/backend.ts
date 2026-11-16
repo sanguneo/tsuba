@@ -73,6 +73,11 @@ export function whatsappUserBackend(link: WaLink): AdapterBackend {
       case "names":
         store.setNames(event.names);
         return;
+      case "groups":
+        store.setGroups(event.groups);
+        return;
+      case "groupSyncFailed":
+        return;
       case "chatsDeleted":
         store.deleteChats(event.ids);
         return;

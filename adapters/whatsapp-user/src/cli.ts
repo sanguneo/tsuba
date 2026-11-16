@@ -67,6 +67,8 @@ if (command !== "login" && command !== "serve") {
   link.subscribe((event) => {
     if (event.type === "state")
       console.log(`tsuba-whatsapp-user state: ${event.state}`);
+    else if (event.type === "groupSyncFailed")
+      console.warn("tsuba-whatsapp-user group metadata unavailable");
   });
   const server = serve({
     token:

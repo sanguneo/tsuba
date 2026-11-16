@@ -60,10 +60,27 @@ export interface WaChat {
   unreadCount?: number | null;
 }
 
+/** Preserve saved names, public names and the phone/LID identity separately. */
+export interface WaContact {
+  readonly id: string;
+  readonly name?: string | null;
+  readonly notify?: string | null;
+  readonly lid?: string;
+  readonly jid?: string;
+}
+
+export interface WaGroup {
+  readonly id: string;
+  readonly subject?: string;
+}
+
 /** What the socket reports about the chat and message state. */
 export type WaDataEvent =
   | { type: "chats"; chats: WaChat[] }
-  | { type: "names"; names: { id: string; name: string }[] }
+  | { type: "names"; names: WaContact[] }
+  | { type: "groups"; groups: WaGroup[] }
+  /** Optional group metadata failed; no account data or SDK error is exposed. */
+  | { type: "groupSyncFailed" }
   | { type: "chatsDeleted"; ids: string[] }
   /** `live` is a message that arrived while connected; history is not streamed. */
   | { type: "messages"; messages: WaMessageLike[]; live: boolean }

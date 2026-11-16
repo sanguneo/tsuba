@@ -29,6 +29,7 @@ async function setup() {
       calls.push({ jid, content, options });
       return text("9000", "sent");
     }) as BaileysLike["sendMessage"],
+    groupFetchAllParticipating: async () => ({}),
     end() {
       ended++;
     },
@@ -129,7 +130,10 @@ test("history, chats, contacts and live messages are translated; only notify is 
   ]);
   expect(events[1]).toEqual({
     type: "names",
-    names: [{ id: ROOM, name: "Pushed name" }],
+    names: [
+      { id: ROOM, notify: "Pushed name" },
+      { id: "100000000009@s.whatsapp.net" },
+    ],
   });
   expect(events[2]).toMatchObject({ live: false });
   expect(events[3]).toMatchObject({ chats: [{ id: ROOM, unreadCount: 3 }] });
