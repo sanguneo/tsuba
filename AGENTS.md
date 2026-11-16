@@ -27,7 +27,7 @@ bun run test
 | `contract/openapi.json` | The adapter contract. Consumers copy it byte for byte |
 | `contract/CHANGELOG.md` | Every contract version and why it changed |
 | `packages/serve-kit/` | What every adapter shares: envelope, auth, routing, capabilities, `/media` headers |
-| `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram` and `slack` as the user, `discord` as a bot) |
+| `adapters/<provider>/` | One messenger each, built on `serve-kit` (`telegram`, `slack`, `discord-user` and `whatsapp-user` as the user, `discord` as a bot) |
 | `examples/memo/` | The minimal adapter `docs/custom-adapter.md` walks through; typechecked and tested, not shipped |
 | `docs/contract.md` | The contract's rules in one place, and every name in use or reserved |
 | `docs/` | Also the per-adapter notes, deployment and the reference review |
@@ -101,3 +101,7 @@ Login automation that bypasses a messenger's own sign-in, protocol
 reimplementation of messengers without an official client API, history
 harvesting beyond what the user's own client can see, and any adapter acting as
 a user where the messenger only permits bots.
+
+Exception: `whatsapp-user` exists by owner decision (2026-11-16) although it is
+an unofficial protocol client; the risk (account suspension) is documented in
+`docs/whatsapp-user.md`. Its precedent is `adapters/discord-user`.

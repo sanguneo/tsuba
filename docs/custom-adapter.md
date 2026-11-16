@@ -115,7 +115,7 @@ export const CAPABILITIES: Capabilities = {
 | 변수 | 뜻 |
 |---|---|
 | `TSUBA_<ID>_HTTP_TOKEN` | saya 가 이 어댑터에 보낼 토큰(16자 이상). 없으면 `TSUBA_TOKEN` |
-| `TSUBA_<ID>_PORT` | 포트. 다른 어댑터와 겹치지 않게(텔레그램 8790, 디스코드 8792, 슬랙 8793, discord-user 8794) |
+| `TSUBA_<ID>_PORT` | 포트. 다른 어댑터와 겹치지 않게(텔레그램 8790, 디스코드 8792, 슬랙 8793, discord-user 8794, whatsapp-user 8795) |
 | 메신저 토큰 | `TSUBA_<ID>_...` 로 이름을 정하고 `.env.example` 에 빈 값으로 한 줄 적습니다 |
 
 `.env` 는 저장소 루트에서 Bun 이 읽고, git 에는 올라가지 않습니다.
