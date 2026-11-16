@@ -1,5 +1,6 @@
 # One unit per adapter: tsuba@telegram (127.0.0.1:8790), tsuba@discord (8792),
-# tsuba@slack (8793). The instance name is the directory under adapters/.
+# tsuba@slack (8793), tsuba@discord-user (8794), tsuba@whatsapp-user (8795; run
+# its `login` once first). The instance name is the directory under adapters/.
 # Each reads ~/tsuba/.env (600) through Bun from the working directory and
 # logs to the journal: journalctl -u tsuba@slack -f
 [Unit]

@@ -45,7 +45,7 @@ test("without a known adapter it prints usage and exits 2", async () => {
     expect(await bounded(child.exited, "usage exit")).toBe(2);
     const output = await new Response(child.stdout).text();
     expect(output).toContain(
-      "usage: tsuba <telegram|discord|slack|discord-user> <command>",
+      "usage: tsuba <telegram|discord|slack|discord-user|whatsapp-user> <command>",
     );
     expect(output).toContain("https://github.com/sanguneo/tsuba");
   }

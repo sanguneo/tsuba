@@ -117,7 +117,7 @@ saya 는 어댑터 주소와 토큰을 들고 있지 않습니다. 어댑터가 
 ```sh
 bun run compile                                   # dist/tsuba (Windows 는 tsuba.exe)
 bun build --compile --minify --target=bun-linux-arm64 bin/tsuba.ts --outfile dist/tsuba-linux-arm64
-dist/tsuba telegram login                         # tsuba <telegram|discord|slack|discord-user> <명령>
+dist/tsuba telegram login                         # tsuba <telegram|discord|slack|discord-user|whatsapp-user> <명령>
 dist/tsuba slack serve
 ```
 
