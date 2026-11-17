@@ -22,8 +22,14 @@ AGENTS.md 의 「Deliberately absent」(공식 API 없는 메신저의 프로토
 - 끊긴 연결은 1초에서 시작해 두 배씩, 최대 60초 간격으로 다시 잇습니다.
 - 로그아웃(401), 다른 Web 세션의 가로채기(440), WhatsApp 의 거절(403)이면 다시
   잇지 않고 상태만 알립니다. 재로그인을 시도하지 않습니다.
-- 접속해도 "온라인" 표시를 올리지 않고(`markOnlineOnConnect: false`), 전체 기록
-  동기화를 요청하지 않으며, 링크 미리보기를 만들지 않습니다.
+- 접속해도 "온라인" 표시를 올리지 않고(`markOnlineOnConnect: false`),
+  링크 미리보기를 만들지 않습니다. 방 목록·이름 수신을 위해 연결 기기를
+  `Browsers.ubuntu("Desktop")`, `syncFullHistory: true`로 등록합니다.
+  Ubuntu 튜플은 6.7.24에서 `WEB_BROWSER`를 유지하므로, upstream
+  [#2677](https://github.com/WhiskeySockets/Baileys/issues/2677)과
+  [#2880](https://github.com/WhiskeySockets/Baileys/issues/2880)의
+  WIN32/DARWIN 접속 거절 경로를 피합니다. WhatsApp이 보내는 기록만 받고,
+  디스크에는 방마다 최근 50개만 보관합니다.
 - 대량 동작이 없습니다. 쓰기는 serve-kit 의 쓰기 줄 하나로 한 번에 하나씩 갑니다.
 
 ## 로그인
@@ -37,9 +43,10 @@ bun adapters/whatsapp-user/src/cli.ts login
 터미널에 QR 코드가 뜹니다. 폰에서 **WhatsApp > 연결된 기기 > 기기 연결**로
 찍으세요. 3분 안에 연결되지 않으면 끝납니다(다시 실행). 연결이 열린 뒤에도
 최근 대화·연락처·메시지를 받기 위해 최대 60초 더 연결을 유지합니다.
-Baileys 6.7.24가 RECENT history의 `progress: 100`을 보내거나 이 마감 시간이
+Baileys 6.7.24가 FULL history의 `progress: 100`을 보내거나 이 마감 시간이
 지나면 소켓을 닫고 `sessions/whatsapp/store.json` 저장을 끝낸 뒤 `linked`를
 출력합니다. `isLatest`는 첫 history 표시라 완료 신호로 쓰지 않습니다.
+RECENT 100%는 뒤따르는 FULL 수신을 끊을 수 있어 완료 신호로 쓰지 않습니다.
 완료 history 뒤 같은 SDK 배치로 이어지는 연락처·그룹 변경도 받은 뒤 종료합니다.
 진행률이 없거나 history가 오지 않으면 마감까지 받은 부분만 저장합니다.
 마감은 전체 기록 수신을 보장하지 않습니다.
@@ -70,6 +77,11 @@ QR, 세션 내용은 어디에도 출력하지 않습니다(Baileys 의 로그�
 로그아웃한 뒤, 기존 `sessions/whatsapp/`를 보관용으로 옮기고 새로 `login`합니다.
 `linked` 출력까지 기다린 뒤 같은 작업 디렉터리에서 `serve`를 시작합니다.
 새 `store.json`의 방 목록과 이름은 다음 연결 전에 복원됩니다.
+기존 링크는 등록 때 보낸 `requireFullSync`가 바뀌지 않으므로, 빈 캐시를
+채우기 위한 이번 변경의 확인은 위 재링크 절차로 합니다. 정상 캐시가 있는
+계정은 재시작 시 그대로 복원하며 무조건 재링크하지 않습니다.
+설정과 캐시 복원은 합성 테스트로 검증했지만, 실제 계정에서 history·연락처·
+그룹이 도착하는지는 운영자가 확인해야 합니다.
 
 | 설정 | 기본값 |
 | --- | --- |
@@ -125,6 +137,15 @@ SDK는 응답에 `groups` 노드가 없어도 빈 결과로 반환하고, 연결
 늦게 온 옛 메시지는 최신 pushName 을 덮지 않습니다. 자기 메시지의 pushName 은
 상대방 이름으로 쓰지 않으며, 별칭이 연결되어도 방 id 와 메시지 기록은 합치지 않습니다.
 
+`/send`는 LID 방 id를 그대로 SDK에 전달하며 LID 숫자를 전화번호로 바꾸지 않습니다.
+Baileys 6.7.24의 자기 LID가 기기 번호 없는 `user@lid`일 때 자기 기기 수신 주소에
+도메인을 두 번 붙이는 결함은 `patches/`의 Bun 패치로 고칩니다. 설치 때 자동 적용되며
+SDK 버전은 올리지 않습니다. SDK 자체의 JID 디코더로 user를 추출합니다.
+자기 LID가 아직 도착하지 않았으면 SDK를 호출하기 전에 `BUSY`로 거절합니다.
+명시적 수신자/암호화 키 404는 `NOT_FOUND`, 알 수 없는 쓰기 결과는 `INTERNAL`이며
+자동 재전송하지 않습니다. 합성 키로 실제 Signal 암호화·복호화까지 검증했지만,
+실제 WhatsApp 서버 수락이나 수신자 전달은 별도 승인 후 확인해야 합니다.
+
 ## 못 하는 것
 
 메시지 첨부 읽기·보내기, 반응, 수정, 삭제, 읽음 표시, 입력 중 표시, 보낸 사람 사진,
@@ -170,6 +191,7 @@ id 가 바뀌며, URL 만 바뀌고 사진은 같으면 id 를 유지합니다. 
 | 로그인하지 않았거나 로그아웃됨, 보내기에서 401 | `REAUTH_REQUIRED`(`login` 을 다시 실행) |
 | 연결 중·재연결 중·가로채기 상태에서 보내기 | `BUSY` — 아무것도 보내지 않았음 |
 | WhatsApp 의 거절(403) | `FORBIDDEN` |
+| WhatsApp 수신자·암호화 키 조회의 명시적 404 | `NOT_FOUND` |
 | 속도 제한(429) | `RATE_LIMITED` |
 | 그 밖의 보내기 실패 | `INTERNAL` — 결과를 알 수 없으므로 자동 재시도하지 않음 |
 

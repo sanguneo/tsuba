@@ -140,20 +140,23 @@ test("edits and deletes of held messages stream; unknown ones are silent", () =>
   ]);
 });
 
-test("send answers with the accepted message and keeps it readable", async () => {
-  const { handle, link } = setup();
-  const response = await handle(post("/send", { roomId: ROOM, text: "hello" }));
-  expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({
-    ok: true,
-    message: { id: "9000", fromMe: true, roomId: ROOM },
-  });
-  expect(link.sends).toEqual([{ jid: ROOM, text: "hello" }]);
-  const page = (await (
-    await handle(get(`/messages?roomId=${ROOM}`))
-  ).json()) as MessagesAnswer;
-  expect(page.messages.map(({ id }) => id)).toEqual(["9000"]);
-});
+test.each([ROOM, "100000000003@lid"])(
+  "send to %s answers with the accepted message and keeps it readable",
+  async (roomId) => {
+    const { handle, link } = setup();
+    const response = await handle(post("/send", { roomId, text: "hello" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      message: { id: "9000", fromMe: true, roomId },
+    });
+    expect(link.sends).toEqual([{ jid: roomId, text: "hello" }]);
+    const page = (await (
+      await handle(get(`/messages?roomId=${roomId}`))
+    ).json()) as MessagesAnswer;
+    expect(page.messages.map(({ id }) => id)).toEqual(["9000"]);
+  },
+);
 
 test("a reply quotes the held message and refuses one it has not seen", async () => {
   const { handle, link } = setup();
@@ -226,6 +229,7 @@ test("WhatsApp refusals keep their codes and any other failure is unknown and no
   for (const [statusCode, status, code] of [
     [401, 503, "REAUTH_REQUIRED"],
     [403, 403, "FORBIDDEN"],
+    [404, 404, "NOT_FOUND"],
     [429, 429, "RATE_LIMITED"],
     [428, 500, "INTERNAL"],
     [undefined, 500, "INTERNAL"],

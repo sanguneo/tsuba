@@ -77,7 +77,7 @@ export interface WaGroup {
 /** What the socket reports about the chat and message state. */
 export type WaDataEvent =
   | { type: "chats"; chats: WaChat[] }
-  /** The final RECENT chunk reached 100%; not a claim of full account history. */
+  /** The final FULL chunk reached 100%; not a claim of full account history. */
   | { type: "historySyncComplete" }
   | { type: "names"; names: WaContact[] }
   | { type: "groups"; groups: WaGroup[] }

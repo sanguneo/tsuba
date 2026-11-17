@@ -1,7 +1,9 @@
 import { chmod, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { AdapterError } from "@tsuba/serve-kit";
 import makeWASocket, {
   type BaileysEventMap,
+  Browsers,
   proto,
   useMultiFileAuthState,
   type WAMessage,
@@ -81,7 +83,10 @@ export function openBaileys({
       auth: state,
       logger: SILENT_LOGGER,
       markOnlineOnConnect: false,
-      syncFullHistory: false,
+      // Desktop companion requests history; Ubuntu retains WEB_BROWSER in
+      // 6.7.24, avoiding the WIN32/DARWIN rejection in upstream #2677/#2880.
+      browser: Browsers.ubuntu("Desktop"),
+      syncFullHistory: true,
       generateHighQualityLinkPreview: false,
     });
     socket.ev.on("creds.update", () => {
@@ -119,7 +124,7 @@ export function openBaileys({
       emit({ type: "messages", messages: history.messages, live: false });
       // isLatest marks the first processed history, not the final chunk.
       if (
-        history.syncType === proto.HistorySync.HistorySyncType.RECENT &&
+        history.syncType === proto.HistorySync.HistorySyncType.FULL &&
         history.progress === 100
       )
         emit({ type: "historySyncComplete" });
@@ -172,13 +177,13 @@ export function openBaileys({
     socket.ev.on("messages.delete", (deletion) => {
       if ("keys" in deletion) emit({ type: "delete", keys: deletion.keys });
     });
-    return socket;
+    return { socket, creds: state.creds };
   })();
   ready.catch(() => emit({ type: "close", statusCode: undefined }));
 
   return {
     async profilePictureUrl(jid) {
-      const socket = await ready;
+      const { socket } = await ready;
       // 6.7.24 forwards timeoutMs to query/waitForMessage; no AbortSignal API.
       return socket.profilePictureUrl(jid, "preview", 3_000);
     },
@@ -186,7 +191,12 @@ export function openBaileys({
       handler = next;
     },
     async sendText(jid, text, quoted) {
-      const socket = await ready;
+      const { socket, creds } = await ready;
+      if (jid.endsWith("@lid") && !creds.me?.lid)
+        throw new AdapterError(
+          "BUSY",
+          "WhatsApp has not supplied this device's LID yet; nothing was sent",
+        );
       return socket.sendMessage(
         jid,
         { text },
@@ -196,8 +206,8 @@ export function openBaileys({
     },
     async close() {
       handler = () => {};
-      const socket = await ready.catch(() => undefined);
-      socket?.end(undefined);
+      const held = await ready.catch(() => undefined);
+      held?.socket.end(undefined);
       await saving;
     },
   };
