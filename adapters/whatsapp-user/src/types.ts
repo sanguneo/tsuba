@@ -79,6 +79,8 @@ export type WaDataEvent =
   | { type: "chats"; chats: WaChat[] }
   | { type: "names"; names: WaContact[] }
   | { type: "groups"; groups: WaGroup[] }
+  | { type: "groupSyncStarted" }
+  | { type: "groupSyncComplete"; count: number }
   /** Optional group metadata failed; no account data or SDK error is exposed. */
   | { type: "groupSyncFailed" }
   | { type: "chatsDeleted"; ids: string[] }

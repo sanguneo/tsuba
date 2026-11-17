@@ -94,6 +94,7 @@ test("connection updates become qr, open and close with the Boom status code", a
   expect(events).toEqual([
     { type: "qr", qr: "synthetic-qr" },
     { type: "open" },
+    { type: "groupSyncStarted" },
     { type: "close", statusCode: 401 },
     { type: "close", statusCode: undefined },
   ]);

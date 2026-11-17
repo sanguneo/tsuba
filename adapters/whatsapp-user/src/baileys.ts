@@ -89,11 +89,18 @@ export function openBaileys({
       if (update.qr) emit({ type: "qr", qr: update.qr });
       if (update.connection === "open") {
         emit({ type: "open" });
+        emit({ type: "groupSyncStarted" });
         // Baileys 6.7.24 emits groups.update with the fetched metadata itself.
         // Keep a failed optional read separate from the connection state, and
         // report only a safe signal: SDK errors can contain account data.
         void socket
           .groupFetchAllParticipating()
+          .then((groups) =>
+            emit({
+              type: "groupSyncComplete",
+              count: Object.keys(groups).length,
+            }),
+          )
           .catch(() => emit({ type: "groupSyncFailed" }));
       }
       if (update.connection === "close")

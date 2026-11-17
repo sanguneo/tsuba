@@ -173,3 +173,29 @@ test("a failed group lookup reports only a safe state and keeps serving later gr
   expect(link.state()).toBe("open");
   expect(await rooms()).toEqual({ [GROUP]: "Recovered subject" });
 });
+
+test.each([0, 1])(
+  "a successful group lookup reports its count (%i), including a genuinely empty result",
+  async (count) => {
+    const { ev, link, fetched, groups, rooms } = await setup();
+    const complete = deferred<number>();
+    const started = deferred<void>();
+    link.subscribe((event) => {
+      if (event.type === "groupSyncStarted") started.resolve();
+      if (event.type === "groupSyncComplete") {
+        expect(event).toEqual({ type: "groupSyncComplete", count });
+        complete.resolve(event.count);
+      }
+      if (event.type === "groupSyncFailed")
+        throw new Error("Successful lookup reported failure");
+    });
+    ev.emit("connection.update", { connection: "open" });
+    await bounded(started.promise, "group fetch started");
+    await bounded(fetched.promise, "group fetch called");
+    groups.resolve(count ? { [GROUP]: group("Synthetic subject") } : {});
+    expect(await bounded(complete.promise, "group count reported")).toBe(count);
+    expect(await rooms()).toEqual(
+      count ? { [GROUP]: "Synthetic subject" } : {},
+    );
+  },
+);

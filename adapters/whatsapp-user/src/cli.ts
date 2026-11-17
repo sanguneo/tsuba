@@ -6,6 +6,7 @@ import { whatsappUserBackend } from "./backend";
 import { openBaileys, prepareSessionDir } from "./baileys";
 import { CAPABILITIES } from "./capabilities";
 import { linkAccount } from "./login";
+import { openWaStore } from "./persistence";
 import { connectWhatsApp } from "./session";
 
 /**
@@ -57,6 +58,9 @@ if (command !== "login" && command !== "serve") {
     process.exit(1);
   }
   await prepareSessionDir(authDir);
+  const cache = await openWaStore(join(authDir, "store.json"), () =>
+    console.warn("tsuba-whatsapp-user room cache save failed"),
+  );
   const link = connectWhatsApp({
     open: () => openBaileys({ authDir }),
     schedule(run, delayMs) {
@@ -69,6 +73,10 @@ if (command !== "login" && command !== "serve") {
       console.log(`tsuba-whatsapp-user state: ${event.state}`);
     else if (event.type === "groupSyncFailed")
       console.warn("tsuba-whatsapp-user group metadata unavailable");
+    else if (event.type === "groupSyncStarted")
+      console.log("tsuba-whatsapp-user group metadata fetching");
+    else if (event.type === "groupSyncComplete")
+      console.log(`tsuba-whatsapp-user group metadata fetched: ${event.count}`);
   });
   const server = serve({
     token:
@@ -80,7 +88,10 @@ if (command !== "login" && command !== "serve") {
       type: "image/svg+xml",
     },
     capabilities: CAPABILITIES,
-    backend: whatsappUserBackend(link),
+    backend: whatsappUserBackend(link, {
+      store: cache.store,
+      changed: cache.save,
+    }),
   });
   console.log(
     `tsuba-whatsapp-user listening on ${server.hostname}:${server.port}`,
@@ -91,4 +102,5 @@ if (command !== "login" && command !== "serve") {
   });
   await server.stop(true);
   await link.stop();
+  await cache.flush();
 }
