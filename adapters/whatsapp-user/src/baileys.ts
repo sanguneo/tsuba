@@ -2,6 +2,7 @@ import { chmod, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import makeWASocket, {
   type BaileysEventMap,
+  proto,
   useMultiFileAuthState,
   type WAMessage,
   WAMessageStubType,
@@ -91,17 +92,19 @@ export function openBaileys({
       if (update.connection === "open") {
         emit({ type: "open" });
         emit({ type: "groupSyncStarted" });
-        // Baileys 6.7.24 emits groups.update with the fetched metadata itself.
+        // Baileys 6.7.24 can buffer groups.update and discard a later update
+        // for the same id. Apply this query's result directly before its count.
         // Keep a failed optional read separate from the connection state, and
         // report only a safe signal: SDK errors can contain account data.
         void socket
           .groupFetchAllParticipating()
-          .then((groups) =>
+          .then((groups) => {
+            emit({ type: "groups", groups: Object.values(groups) });
             emit({
               type: "groupSyncComplete",
               count: Object.keys(groups).length,
-            }),
-          )
+            });
+          })
           .catch(() => emit({ type: "groupSyncFailed" }));
       }
       if (update.connection === "close")
@@ -114,6 +117,12 @@ export function openBaileys({
       emit({ type: "chats", chats: history.chats });
       emit({ type: "names", names: contactNames(history.contacts) });
       emit({ type: "messages", messages: history.messages, live: false });
+      // isLatest marks the first processed history, not the final chunk.
+      if (
+        history.syncType === proto.HistorySync.HistorySyncType.RECENT &&
+        history.progress === 100
+      )
+        emit({ type: "historySyncComplete" });
     });
     socket.ev.on("chats.upsert", (chats) => emit({ type: "chats", chats }));
     socket.ev.on("chats.update", (updates) =>
