@@ -40,6 +40,7 @@ bun adapters/whatsapp-user/src/cli.ts login
 Baileys 6.7.24가 RECENT history의 `progress: 100`을 보내거나 이 마감 시간이
 지나면 소켓을 닫고 `sessions/whatsapp/store.json` 저장을 끝낸 뒤 `linked`를
 출력합니다. `isLatest`는 첫 history 표시라 완료 신호로 쓰지 않습니다.
+완료 history 뒤 같은 SDK 배치로 이어지는 연락처·그룹 변경도 받은 뒤 종료합니다.
 진행률이 없거나 history가 오지 않으면 마감까지 받은 부분만 저장합니다.
 마감은 전체 기록 수신을 보장하지 않습니다.
 세션은 `sessions/whatsapp/` 에 저장됩니다(폴더 700,

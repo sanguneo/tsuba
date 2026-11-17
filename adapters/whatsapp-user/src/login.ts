@@ -78,7 +78,9 @@ export async function linkAccount({
               );
               break;
             case "historySyncComplete":
-              if (opened) finish({ linked: true });
+              // The same synchronous Baileys flush emits contacts and groups
+              // after history. Keep intake open until that batch has drained.
+              if (opened) queueMicrotask(() => finish({ linked: true }));
               break;
             default:
               applyStoreEvent(cache.store, event);

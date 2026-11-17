@@ -21,17 +21,20 @@ test("login retains history after open and a fresh store serves its rooms and na
   await Promise.resolve();
   expect(socket.closed).toBe(false);
   socket.emit({ type: "chats", chats: [{ id: ROOM }, { id: GROUP }] });
-  socket.emit({ type: "names", names: [{ id: ROOM, name: "Saved friend" }] });
-  socket.emit({
-    type: "groups",
-    groups: [{ id: GROUP, subject: "Synthetic group" }],
-  });
+  socket.emit({ type: "names", names: [{ id: ROOM }] });
   socket.emit({
     type: "messages",
     messages: [text("1", "history")],
     live: false,
   });
   socket.emit({ type: "historySyncComplete" });
+  // Baileys flushes consolidated history before separately buffered contacts
+  // and groups, including a contact queued before an unnamed history contact.
+  socket.emit({ type: "names", names: [{ id: ROOM, name: "Saved friend" }] });
+  socket.emit({
+    type: "groups",
+    groups: [{ id: GROUP, subject: "Synthetic group" }],
+  });
   expect(await bounded(result, "history saved")).toEqual({ linked: true });
   expect(socket.closed).toBe(true);
   const restored = await start();
