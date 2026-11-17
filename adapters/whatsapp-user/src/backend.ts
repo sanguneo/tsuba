@@ -53,13 +53,18 @@ function sendError(error: unknown): AdapterError {
 }
 
 /**
- * Rooms and messages are what the connection has pushed since the process
- * started, held in memory (`WaStore`). `complete` is therefore always false:
+ * Rooms and messages are what the connection has pushed, including its saved
+ * cache (`WaStore`). `complete` is therefore always false:
  * WhatsApp never says it has sent everything. Reads are refused only once the
  * device is logged out; a send also needs an open connection and never retries.
  */
-export function whatsappUserBackend(link: WaLink): AdapterBackend {
-  const store = new WaStore();
+export function whatsappUserBackend(
+  link: WaLink,
+  {
+    store = new WaStore(),
+    changed = () => {},
+  }: { store?: WaStore; changed?: () => void } = {},
+): AdapterBackend {
   const listeners = new Set<(update: StreamUpdate) => void>();
   const emit = (update: StreamUpdate) => {
     for (const listener of listeners) listener(update);
@@ -77,6 +82,8 @@ export function whatsappUserBackend(link: WaLink): AdapterBackend {
         store.setGroups(event.groups);
         return;
       case "groupSyncFailed":
+      case "groupSyncStarted":
+      case "groupSyncComplete":
         return;
       case "chatsDeleted":
         store.deleteChats(event.ids);
@@ -109,7 +116,15 @@ export function whatsappUserBackend(link: WaLink): AdapterBackend {
     }
   }
   link.subscribe((event) => {
-    if (event.type !== "state") apply(event);
+    if (
+      event.type !== "state" &&
+      event.type !== "groupSyncStarted" &&
+      event.type !== "groupSyncComplete" &&
+      event.type !== "groupSyncFailed"
+    ) {
+      apply(event);
+      changed();
+    }
   });
 
   function requireLogin() {
@@ -171,7 +186,7 @@ export function whatsappUserBackend(link: WaLink): AdapterBackend {
       if (replyTo !== undefined && !quoted)
         throw new AdapterError(
           "NOT_FOUND",
-          "Only messages this adapter has seen since it started can be replied to",
+          "Only messages retained by this adapter can be replied to",
         );
       let sent: Awaited<ReturnType<WaLink["send"]>>;
       try {
@@ -185,6 +200,7 @@ export function whatsappUserBackend(link: WaLink): AdapterBackend {
           "INTERNAL",
           "WhatsApp did not describe the sent message; its outcome is unknown",
         );
+      changed();
       return message;
     },
   };

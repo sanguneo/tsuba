@@ -1,5 +1,7 @@
 import type { Message, Room } from "@tsuba/serve-kit";
+import { proto } from "@whiskeysockets/baileys";
 import { isRoomJid, mapMessage, mapRoom, shown, toSeconds } from "./mapping";
+import type { StoreSnapshot } from "./snapshot";
 import type {
   WaChat,
   WaContact,
@@ -10,6 +12,7 @@ import type {
 } from "./types";
 
 const MESSAGES_PER_ROOM = 200;
+const SAVED_MESSAGES_PER_ROOM = 50;
 const ROOM_LIMIT = 500;
 
 interface Entry {
@@ -24,9 +27,8 @@ function personalJid(jid: string): string | undefined {
 }
 
 /**
- * What this process has seen since it started: the chats and messages WhatsApp
- * pushed while syncing and while connected. Memory only; nothing is written to
- * disk, because WhatsApp offers no call that fetches a room's older history.
+ * What WhatsApp has pushed while syncing and connected, including the saved
+ * cache from earlier runs. WhatsApp cannot fetch a room's older history.
  */
 export class WaStore {
   private readonly chats = new Map<string, Omit<WaChat, "id">>();
@@ -38,6 +40,68 @@ export class WaStore {
   private readonly pushNames = new Map<string, { name: string; at: number }>();
   private readonly subjects = new Map<string, string>();
   private readonly messages = new Map<string, Map<string, Entry>>();
+
+  constructor(snapshot?: StoreSnapshot) {
+    if (!snapshot) return;
+    this.setChats(
+      snapshot.chats.map(({ id, name, at, unread }) => ({
+        id,
+        name,
+        conversationTimestamp: at,
+        unreadCount: unread,
+      })),
+    );
+    this.setNames(snapshot.names);
+    for (const { id, linked } of snapshot.aliases)
+      this.aliases.set(id, new Set(linked));
+    this.setGroups(snapshot.subjects);
+    for (const { data, editedAt } of snapshot.messages) {
+      const raw = proto.WebMessageInfo.decode(Buffer.from(data, "base64"));
+      this.put(raw);
+      const entry = this.entry(raw.key);
+      if (entry) entry.editedAt = editedAt;
+    }
+    for (const { id, name, at } of snapshot.pushNames)
+      this.pushNames.set(id, { name, at });
+  }
+
+  snapshot(): StoreSnapshot {
+    return {
+      version: 1,
+      chats: [...this.chats].map(([id, chat]) => ({
+        id,
+        name: chat.name ?? null,
+        at: toSeconds(chat.conversationTimestamp),
+        unread: chat.unreadCount ?? null,
+      })),
+      names: [...this.names].map(([id, contact]) => ({
+        id,
+        name: contact.name ?? null,
+        notify: contact.notify ?? null,
+      })),
+      aliases: [...this.aliases].map(([id, linked]) => ({
+        id,
+        linked: [...linked],
+      })),
+      pushNames: [...this.pushNames].map(([id, pushed]) => ({ id, ...pushed })),
+      subjects: [...this.subjects].map(([id, subject]) => ({ id, subject })),
+      messages: [...this.messages.keys()].flatMap((id) =>
+        this.sorted(id)
+          .slice(-SAVED_MESSAGES_PER_ROOM)
+          .map(({ raw, editedAt }) => ({
+            data: Buffer.from(
+              proto.WebMessageInfo.encode(
+                proto.WebMessageInfo.fromObject({
+                  ...raw,
+                  messageTimestamp: toSeconds(raw.messageTimestamp),
+                }),
+              ).finish(),
+            ).toString("base64"),
+            editedAt,
+          })),
+      ),
+    };
+  }
 
   setChats(chats: WaChat[]): void {
     for (const { id, ...rest } of chats) {
