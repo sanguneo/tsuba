@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { whatsappUserBackend } from "../adapters/whatsapp-user/src/backend";
 import { CAPABILITIES } from "../adapters/whatsapp-user/src/capabilities";
 import { openWaStore } from "../adapters/whatsapp-user/src/persistence";
+import type { AvatarOptions } from "../adapters/whatsapp-user/src/room-avatars";
 import { StoreFileError } from "../adapters/whatsapp-user/src/snapshot";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { fakeLink } from "./whatsapp-user-fixtures";
@@ -21,11 +22,12 @@ export async function setupCache() {
       });
     await rm(dir, { recursive: true, force: true });
   });
-  async function start() {
+  async function start(avatarOptions: AvatarOptions = {}) {
     const cache = await openWaStore(path, () => failures++);
     caches.push(cache);
     const link = fakeLink();
     const backend = whatsappUserBackend(link, {
+      ...avatarOptions,
       store: cache.store,
       changed: cache.save,
     });

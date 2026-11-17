@@ -4,6 +4,7 @@ import {
   type StreamUpdate,
 } from "@tsuba/serve-kit";
 import { isRoomJid, toSeconds } from "./mapping";
+import { type AvatarOptions, RoomAvatars } from "./room-avatars";
 import type { WaLink } from "./session";
 import { WaStore } from "./store";
 import type { WaDataEvent } from "./types";
@@ -63,8 +64,13 @@ export function whatsappUserBackend(
   {
     store = new WaStore(),
     changed = () => {},
-  }: { store?: WaStore; changed?: () => void } = {},
+    ...avatarOptions
+  }: { store?: WaStore; changed?: () => void } & AvatarOptions = {},
 ): AdapterBackend {
+  const avatars = new RoomAvatars(
+    (jid) => link.profilePictureUrl(jid),
+    avatarOptions,
+  );
   const listeners = new Set<(update: StreamUpdate) => void>();
   const emit = (update: StreamUpdate) => {
     for (const listener of listeners) listener(update);
@@ -160,7 +166,15 @@ export function whatsappUserBackend(
   return {
     async listRooms() {
       requireLogin();
-      return { rooms: store.rooms(), complete: false };
+      const rooms = store.rooms();
+      return {
+        rooms: link.state() === "open" ? await avatars.rooms(rooms) : rooms,
+        complete: false,
+      };
+    },
+    async media(id, signal) {
+      requireLogin();
+      return avatars.media(id, signal);
     },
     async readMessages({ roomId, limit, before }) {
       requireLogin();

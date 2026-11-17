@@ -16,10 +16,19 @@ async function setup() {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-"));
   const handlers = new Map<string, ((data: never) => void)[]>();
   const calls: { jid: string; content: unknown; options: unknown }[] = [];
+  const pictures: {
+    jid: string;
+    type: string | undefined;
+    timeout: number | undefined;
+  }[] = [];
   let config: Record<string, unknown> = {};
   let ended = 0;
   const made = deferred<void>();
   const socket: BaileysLike = {
+    profilePictureUrl: async (jid, type, timeout) => {
+      pictures.push({ jid, type, timeout });
+      return undefined;
+    },
     ev: {
       on(event, listener) {
         handlers.set(event, [...(handlers.get(event) ?? []), listener]);
@@ -56,6 +65,7 @@ async function setup() {
     events,
     emit,
     calls,
+    pictures,
     authDir,
     config: () => config,
     ended: () => ended,
@@ -72,6 +82,16 @@ test("the connection is opened without presence, history harvesting or library l
   const logger = config().logger as { level: string; info(): void };
   expect(logger.level).toBe("silent");
   expect(logger.info()).toBeUndefined();
+});
+
+test("room picture lookup uses the SDK preview query with a three second deadline", async () => {
+  const { wa, pictures } = await setup();
+  await wa.profilePictureUrl(ROOM);
+  await wa.profilePictureUrl("100000000002-1700000000@g.us");
+  expect(pictures).toEqual([
+    { jid: ROOM, type: "preview", timeout: 3_000 },
+    { jid: "100000000002-1700000000@g.us", type: "preview", timeout: 3_000 },
+  ]);
 });
 
 test("connection updates become qr, open and close with the Boom status code", async () => {

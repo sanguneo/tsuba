@@ -7,6 +7,7 @@ import { connectWhatsApp } from "./session";
 test("serve-kit accepts the personal WhatsApp declaration with its backend", () => {
   const link = connectWhatsApp({
     open: () => ({
+      profilePictureUrl: async () => undefined,
       onEvent() {},
       sendText: async () => undefined,
       close: async () => {},

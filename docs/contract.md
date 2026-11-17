@@ -94,7 +94,7 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 | `messages.read` | 정의 | `GET /messages` | `paging` (`none`·`before-id`), `maxLimit` |
 | `messages.stream` | 정의 | `GET /stream` | `resume` (`none`·`cursor`), `events?` (0.2.2) |
 | `messages.send` | 정의 | `POST /send` | `maxLength`(코드 포인트), `receipt` (`accepted`·`stored`) |
-| `attachments.read` | 정의 (0.2.1) | `Message.attachments`, `GET /media` | — |
+| `attachments.read` | 정의 (0.2.1) | `Message.attachments`, 선택적 `Room.avatar`(0.2.8), `GET /media` | — |
 | `avatars.read` | 정의 (0.2.3) | `Message.senderAvatar` (`GET /media` 의 id). `attachments.read` 옆에서만 | — |
 | `messages.reply` | 정의 (0.2.2) | `POST /send` 의 `replyTo`. `messages.send` 옆에서만 | — |
 | `messages.edit` | 정의 (0.2.2) | `POST /edit` | `maxLength`, `maxAgeSeconds?` |
@@ -172,6 +172,14 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 참여자에게 알릴 수 있습니다.
 
 ## 첨부와 `/media`
+
+`Room.avatar`(0.2.8)는 선택적인 방 사진의 불투명한 `/media` id 입니다.
+`attachments.read` 를 신고하고 그 방에서 사용할 수 있을 때 지원하며, 클라이언트는
+필드가 없거나 방에서 이 기능을 끈 경우 자기 자리표시를 그립니다. 비공개·사진 없음·조회
+실패는 필드를 생략합니다. 방 응답에는 메신저의 원본 사진 URL 을 넣지 않습니다.
+사진이 바뀌면 id 도 바뀌고, 같은 id 는 제공되는 동안 같은 바이트를 답합니다.
+새 기능 id 는 없으며 `avatars.read` 를 요구하거나 뜻하지 않습니다.
+`avatars.read` 의 기존 뜻은 `Message.senderAvatar` 그대로입니다.
 
 `attachments.read` 를 신고한 어댑터의 메시지는 `attachments` 를 가집니다. 각 첨부의 모양은
 `{id, kind, name?, mimeType?, size?, width?, height?, durationSeconds?}` 입니다.

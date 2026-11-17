@@ -19,6 +19,7 @@ export function reconnectDelay(attempt: number): number {
 }
 
 export interface WaLink {
+  profilePictureUrl(jid: string): Promise<string | undefined>;
   state(): WaState;
   subscribe(listener: (event: WaLinkEvent) => void): () => void;
   send(
@@ -103,6 +104,10 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
 
   return {
     state: () => state,
+    async profilePictureUrl(jid) {
+      if (state !== "open" || !socket) return undefined;
+      return socket.profilePictureUrl(jid);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

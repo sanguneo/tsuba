@@ -6,6 +6,18 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.8 — 2026-11-16
+
+Additive: optional `Room.avatar` is an opaque `/media` id for the room picture.
+It is supported when `attachments.read` is declared and enabled for the room.
+Its id changes when the picture changes; while available, one id serves the same
+bytes. Private, missing or failed lookups omit the field, and room responses
+never expose raw messenger picture URLs. Clients ignore it when absent or when
+`attachments.read` is disabled for the room.
+
+No new feature id is introduced. `avatars.read` keeps its existing meaning,
+`Message.senderAvatar`; room pictures neither require nor imply it.
+
 ## 0.2.7 — 2026-10-04
 
 Additive: a 0.2.6 client ignores the new key and offers any file, which an

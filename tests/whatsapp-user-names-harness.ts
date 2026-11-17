@@ -38,6 +38,7 @@ export async function setupNames() {
         makeSocket() {
           made.resolve();
           return {
+            profilePictureUrl: async () => undefined,
             ev,
             sendMessage: async () => undefined,
             groupFetchAllParticipating() {
