@@ -4,6 +4,8 @@ import type { ErrorCode } from "./envelope";
 export interface Room {
   id: string;
   title: string;
+  /** Opaque `/media` id for the room picture; optional with `attachments.read`. */
+  avatar?: string;
   kind: "direct" | "group" | "channel";
   unread: number;
   lastActivityAt?: string;

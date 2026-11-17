@@ -13,6 +13,7 @@ type SocketConfig = Parameters<typeof makeWASocket>[0];
 
 /** The part of a Baileys socket this adapter uses; a test can stand in for it. */
 export interface BaileysLike {
+  profilePictureUrl: ReturnType<typeof makeWASocket>["profilePictureUrl"];
   ev: {
     on<E extends keyof BaileysEventMap>(
       event: E,
@@ -167,6 +168,11 @@ export function openBaileys({
   ready.catch(() => emit({ type: "close", statusCode: undefined }));
 
   return {
+    async profilePictureUrl(jid) {
+      const socket = await ready;
+      // 6.7.24 forwards timeoutMs to query/waitForMessage; no AbortSignal API.
+      return socket.profilePictureUrl(jid, "preview", 3_000);
+    },
     onEvent(next) {
       handler = next;
     },

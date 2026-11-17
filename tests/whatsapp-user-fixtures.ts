@@ -36,6 +36,7 @@ export function fakeLink(initial: WaState = "open") {
     sends: typeof sends;
     sendImpl: (jid: string, text: string) => Promise<WaMessageLike | undefined>;
   } = {
+    profilePictureUrl: async () => undefined,
     sends,
     sendImpl: async (jid) => text("9000", "sent", { key: sentKey(jid) }),
     state: () => state,
@@ -73,6 +74,7 @@ export function socketFactory() {
     open() {
       let handler: (event: WaSocketEvent) => void = () => {};
       const socket = {
+        profilePictureUrl: async () => undefined,
         closed: false,
         emit: (event: WaSocketEvent) => handler(event),
         onEvent(next: (event: WaSocketEvent) => void) {

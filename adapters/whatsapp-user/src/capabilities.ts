@@ -11,6 +11,8 @@ export const CAPABILITIES: Capabilities = {
   account: { kind: "user" },
   adapter: { name: "tsuba-whatsapp-user", version: adapterPackage.version },
   features: {
+    // Optional room pictures only; no sender avatars or message attachments.
+    "attachments.read": {},
     // Chats WhatsApp pushed since this process started (see complete:false).
     "rooms.list": {},
     // Served from memory; WhatsApp has no call for a room's older history.

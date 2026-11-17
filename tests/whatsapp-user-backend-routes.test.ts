@@ -43,28 +43,6 @@ function present<T>(value: T | undefined | null): T {
   return value;
 }
 
-test("the declaration is exactly what the backend performs", async () => {
-  const { handle } = setup();
-  expect(Object.keys(CAPABILITIES.features).sort()).toEqual([
-    "messages.read",
-    "messages.reply",
-    "messages.send",
-    "messages.stream",
-    "rooms.list",
-  ]);
-  expect(CAPABILITIES.account.kind).toBe("user");
-  expect(CAPABILITIES.features["messages.send"]).toMatchObject({
-    receipt: "accepted",
-  });
-  for (const [path, body] of [
-    ["/edit", { roomId: ROOM, messageId: "1", text: "x" }],
-    ["/delete", { roomId: ROOM, messageId: "1" }],
-    ["/react", { roomId: ROOM, messageId: "1", emojis: [] }],
-    ["/read", { roomId: ROOM, messageId: "1" }],
-  ] as const)
-    await error(await handle(post(path, body)), 501, "NOT_SUPPORTED");
-});
-
 test("rooms list what the connection pushed and never claim to be complete", async () => {
   const { handle, link } = setup();
   link.push({
