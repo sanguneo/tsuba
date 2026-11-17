@@ -16,7 +16,7 @@ export type LinkResult =
  * phone (Linked devices); nothing here answers the pairing for them. WhatsApp
  * closes the first connection with 515 right after a scan and expects a new
  * one, which is the only close this reopens. Any other close ends the attempt.
- * Once open, retain the connection until recent history finishes or its own
+ * Once open, retain the connection until full history finishes or its own
  * deadline expires. The pairing deadline no longer cuts this collection short.
  * Close the socket and drain the shared room cache before reporting success.
  */

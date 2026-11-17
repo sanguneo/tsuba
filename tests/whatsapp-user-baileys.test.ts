@@ -3,87 +3,23 @@ import { mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  type BaileysEvents,
   type BaileysLike,
-  openBaileys,
   prepareSessionDir,
 } from "../adapters/whatsapp-user/src/baileys";
-import type { WaSocketEvent } from "../adapters/whatsapp-user/src/types";
 import { bounded, deferred } from "./harness/barriers";
+import { setup } from "./whatsapp-user-baileys-harness";
 import { GROUP, ROOM, text } from "./whatsapp-user-fixtures";
 
-async function setup(
-  fetchGroups: BaileysLike["groupFetchAllParticipating"] = async () => ({}),
-) {
-  const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-"));
-  const handlers = new Map<string, ((data: never) => void)[]>();
-  const calls: { jid: string; content: unknown; options: unknown }[] = [];
-  const pictures: {
-    jid: string;
-    type: string | undefined;
-    timeout: number | undefined;
-  }[] = [];
-  let config: Record<string, unknown> = {};
-  let ended = 0;
-  const made = deferred<void>();
-  const socket: BaileysLike = {
-    profilePictureUrl: async (jid, type, timeout) => {
-      pictures.push({ jid, type, timeout });
-      return undefined;
-    },
-    ev: {
-      on(event, listener) {
-        handlers.set(event, [...(handlers.get(event) ?? []), listener]);
-      },
-    },
-    sendMessage: (async (jid: string, content: unknown, options: unknown) => {
-      calls.push({ jid, content, options });
-      return text("9000", "sent");
-    }) as BaileysLike["sendMessage"],
-    groupFetchAllParticipating: fetchGroups,
-    end() {
-      ended++;
-    },
-  };
-  const wa = openBaileys({
-    authDir,
-    makeSocket(given) {
-      config = given as unknown as Record<string, unknown>;
-      made.resolve();
-      return socket;
-    },
-  });
-  const events: WaSocketEvent[] = [];
-  wa.onEvent((event) => events.push(event));
-  await bounded(made.promise, "socket created");
-  function emit<E extends keyof BaileysEvents & string>(
-    event: E,
-    data: BaileysEvents[E],
-  ) {
-    for (const handler of handlers.get(event) ?? []) handler(data as never);
-  }
-  return {
-    wa,
-    events,
-    emit,
-    calls,
-    pictures,
-    authDir,
-    config: () => config,
-    ended: () => ended,
-  };
-}
-
-test("the connection is opened without presence, history harvesting or library logging", async () => {
+test("the connection requests history without presence or library logging", async () => {
   const { config } = await setup();
   expect(config()).toMatchObject({
     markOnlineOnConnect: false,
-    syncFullHistory: false,
+    syncFullHistory: true,
     generateHighQualityLinkPreview: false,
   });
-  const logger = config().logger as { level: string; info(): void };
-  expect(logger.level).toBe("silent");
-  expect(logger.info()).toBeUndefined();
+  const logger = config().logger;
+  expect(logger?.level).toBe("silent");
+  expect(logger?.info({})).toBeUndefined();
 });
 
 test("room picture lookup uses the SDK preview query with a three second deadline", async () => {
@@ -164,14 +100,15 @@ test("history, chats, contacts and live messages are translated; only notify is 
   expect(events[6]).toMatchObject({ live: false });
 });
 
-test("only the final RECENT chunk signals history completion, after its data", async () => {
+test("only the final FULL chunk signals history completion, after its data", async () => {
   const { events, emit } = await setup();
-  // Wire syncType values: INITIAL_BOOTSTRAP=0, RECENT=3, ON_DEMAND=6.
+  // Wire syncType values: INITIAL_BOOTSTRAP=0, FULL=2, RECENT=3, ON_DEMAND=6.
   for (const [syncType, progress] of [
     [0, 100],
-    [3, 50],
-    [6, 100],
     [3, 100],
+    [6, 100],
+    [2, 50],
+    [2, 100],
   ] as const)
     emit("messaging-history.set", {
       chats: [],

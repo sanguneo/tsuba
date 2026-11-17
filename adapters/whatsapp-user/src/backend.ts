@@ -40,6 +40,11 @@ function sendError(error: unknown): AdapterError {
         "FORBIDDEN",
         "WhatsApp does not let this account do that",
       );
+    case 404:
+      return new AdapterError(
+        "NOT_FOUND",
+        "WhatsApp could not find the recipient or its encryption keys",
+      );
     case 429:
       return new AdapterError(
         "RATE_LIMITED",
