@@ -36,11 +36,19 @@ if (command !== "login" && command !== "serve") {
   console.log("commands: login | serve");
 } else if (command === "login") {
   await prepareSessionDir(authDir);
+  const cache = await openWaStore(join(authDir, "store.json"), () =>
+    console.warn("tsuba-whatsapp-user room cache save failed"),
+  );
   console.log("On the phone: WhatsApp > Linked devices > Link a device.");
   const result = await linkAccount({
     open: () => openBaileys({ authDir }),
     onQr: (qr) => qrcode.generate(qr, { small: true }),
     signal: AbortSignal.timeout(LOGIN_DEADLINE_MS),
+    cache,
+    schedule(run, delayMs) {
+      const timer = setTimeout(run, delayMs);
+      return () => clearTimeout(timer);
+    },
   });
   await prepareSessionDir(authDir);
   if (result.linked) console.log("linked; start the adapter with: serve");

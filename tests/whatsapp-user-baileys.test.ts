@@ -10,9 +10,11 @@ import {
 } from "../adapters/whatsapp-user/src/baileys";
 import type { WaSocketEvent } from "../adapters/whatsapp-user/src/types";
 import { bounded, deferred } from "./harness/barriers";
-import { ROOM, text } from "./whatsapp-user-fixtures";
+import { GROUP, ROOM, text } from "./whatsapp-user-fixtures";
 
-async function setup() {
+async function setup(
+  fetchGroups: BaileysLike["groupFetchAllParticipating"] = async () => ({}),
+) {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-"));
   const handlers = new Map<string, ((data: never) => void)[]>();
   const calls: { jid: string; content: unknown; options: unknown }[] = [];
@@ -38,7 +40,7 @@ async function setup() {
       calls.push({ jid, content, options });
       return text("9000", "sent");
     }) as BaileysLike["sendMessage"],
-    groupFetchAllParticipating: async () => ({}),
+    groupFetchAllParticipating: fetchGroups,
     end() {
       ended++;
     },
@@ -160,6 +162,60 @@ test("history, chats, contacts and live messages are translated; only notify is 
   expect(events[3]).toMatchObject({ chats: [{ id: ROOM, unreadCount: 3 }] });
   expect(events[5]).toMatchObject({ live: true });
   expect(events[6]).toMatchObject({ live: false });
+});
+
+test("only the final RECENT chunk signals history completion, after its data", async () => {
+  const { events, emit } = await setup();
+  // Wire syncType values: INITIAL_BOOTSTRAP=0, RECENT=3, ON_DEMAND=6.
+  for (const [syncType, progress] of [
+    [0, 100],
+    [3, 50],
+    [6, 100],
+    [3, 100],
+  ] as const)
+    emit("messaging-history.set", {
+      chats: [],
+      contacts: [],
+      messages: [],
+      isLatest: true,
+      syncType,
+      progress,
+    });
+  expect(events.filter(({ type }) => type === "historySyncComplete")).toEqual([
+    { type: "historySyncComplete" },
+  ]);
+  expect(events.slice(-4).map(({ type }) => type)).toEqual([
+    "chats",
+    "names",
+    "messages",
+    "historySyncComplete",
+  ]);
+});
+
+test("queried groups arrive before the count even when groups.update is buffered", async () => {
+  const fetched =
+    deferred<Awaited<ReturnType<BaileysLike["groupFetchAllParticipating"]>>>();
+  const { wa, events, emit } = await setup(() => fetched.promise);
+  const complete = deferred<void>();
+  wa.onEvent((event) => {
+    events.push(event);
+    if (event.type === "groupSyncComplete") complete.resolve();
+  });
+  emit("connection.update", { connection: "open" });
+  fetched.resolve({
+    [GROUP]: {
+      id: GROUP,
+      subject: "Fetched group",
+      addressingMode: "pn",
+      owner: undefined,
+      participants: [],
+    },
+  });
+  await bounded(complete.promise, "group query");
+  expect(events.slice(-2)).toMatchObject([
+    { type: "groups", groups: [{ id: GROUP, subject: "Fetched group" }] },
+    { type: "groupSyncComplete", count: 1 },
+  ]);
 });
 
 test("edits and revokes become edit and delete events; other updates are ignored", async () => {

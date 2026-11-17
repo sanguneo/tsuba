@@ -6,6 +6,7 @@ import {
 } from "../adapters/whatsapp-user/src/session";
 import type { WaState } from "../adapters/whatsapp-user/src/types";
 import { socketFactory, text } from "./whatsapp-user-fixtures";
+import { setupCache } from "./whatsapp-user-persistence-harness";
 
 function setup() {
   const factory = socketFactory();
@@ -134,12 +135,16 @@ test("an open that throws is retried with backoff, and stop cancels the pending 
 });
 
 test("login shows every QR code, reopens once after the scan and reports linked", async () => {
+  const { start } = await setupCache();
+  const { cache } = await start();
   const factory = socketFactory();
   const codes: string[] = [];
   const result = linkAccount({
     open: factory.open,
     onQr: (qr) => codes.push(qr),
     signal: new AbortController().signal,
+    cache,
+    schedule: () => () => {},
   });
   const first = factory.sockets[0];
   first?.emit({ type: "qr", qr: "qr-1" });
@@ -149,17 +154,22 @@ test("login shows every QR code, reopens once after the scan and reports linked"
   await Promise.resolve();
   const second = factory.sockets[1];
   second?.emit({ type: "open" });
+  second?.emit({ type: "historySyncComplete" });
   expect(await result).toEqual({ linked: true });
   expect(codes).toEqual(["qr-1", "qr-2"]);
   expect(factory.sockets.every(({ closed }) => closed)).toBe(true);
 });
 
 test("login ends on any other close and on abort", async () => {
+  const { start } = await setupCache();
+  const { cache } = await start();
   const closed = socketFactory();
   const failure = linkAccount({
     open: closed.open,
     onQr() {},
     signal: new AbortController().signal,
+    cache,
+    schedule: () => () => {},
   });
   closed.sockets[0]?.emit({ type: "close", statusCode: 408 });
   expect(await failure).toEqual({
@@ -173,6 +183,8 @@ test("login ends on any other close and on abort", async () => {
     open: aborting.open,
     onQr() {},
     signal: controller.signal,
+    cache,
+    schedule: () => () => {},
   });
   controller.abort();
   expect(await aborted).toEqual({ linked: false, reason: "aborted" });

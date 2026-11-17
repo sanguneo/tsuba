@@ -3,11 +3,11 @@ import {
   AdapterError,
   type StreamUpdate,
 } from "@tsuba/serve-kit";
-import { isRoomJid, toSeconds } from "./mapping";
+import { isRoomJid } from "./mapping";
 import { type AvatarOptions, RoomAvatars } from "./room-avatars";
 import type { WaLink } from "./session";
 import { WaStore } from "./store";
-import type { WaDataEvent } from "./types";
+import { applyStoreEvent } from "./store-events";
 
 function roomJid(value: string): string {
   if (!isRoomJid(value))
@@ -76,59 +76,15 @@ export function whatsappUserBackend(
     for (const listener of listeners) listener(update);
   };
 
-  function apply(event: WaDataEvent) {
-    switch (event.type) {
-      case "chats":
-        store.setChats(event.chats);
-        return;
-      case "names":
-        store.setNames(event.names);
-        return;
-      case "groups":
-        store.setGroups(event.groups);
-        return;
-      case "groupSyncFailed":
-      case "groupSyncStarted":
-      case "groupSyncComplete":
-        return;
-      case "chatsDeleted":
-        store.deleteChats(event.ids);
-        return;
-      case "messages":
-        for (const raw of event.messages) {
-          const { remoteJid, id } = raw.key;
-          const seen = !!remoteJid && !!id && store.has(remoteJid, id);
-          const message = store.put(raw);
-          if (event.live && message && !seen)
-            emit({ event: "message", message });
-        }
-        return;
-      case "edit": {
-        const message = store.edit(
-          event.key,
-          event.content,
-          toSeconds(event.at),
-        );
-        if (message) emit({ event: "message.edited", message });
-        return;
-      }
-      case "delete": {
-        const byRoom = new Map<string, string[]>();
-        for (const { roomId, id } of store.remove(event.keys))
-          byRoom.set(roomId, [...(byRoom.get(roomId) ?? []), id]);
-        for (const [roomId, messageIds] of byRoom)
-          emit({ event: "message.deleted", roomId, messageIds });
-      }
-    }
-  }
   link.subscribe((event) => {
     if (
       event.type !== "state" &&
+      event.type !== "historySyncComplete" &&
       event.type !== "groupSyncStarted" &&
       event.type !== "groupSyncComplete" &&
       event.type !== "groupSyncFailed"
     ) {
-      apply(event);
+      for (const update of applyStoreEvent(store, event)) emit(update);
       changed();
     }
   });
