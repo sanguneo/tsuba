@@ -154,6 +154,7 @@ export class WaStore {
     const roomId = raw.key.remoteJid;
     const id = raw.key.id;
     if (!mapped || !roomId || !id) return null;
+    this.setChats([{ id: roomId }]);
     const sender = personalJid(raw.key.participant ?? roomId);
     const at = toSeconds(raw.messageTimestamp) ?? 0;
     if (
