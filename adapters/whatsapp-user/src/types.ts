@@ -8,6 +8,8 @@ export interface WaKey {
   fromMe?: boolean | null;
   id?: string | null;
   participant?: string | null;
+  senderPn?: string;
+  senderLid?: string;
 }
 
 export interface WaContextInfo {
@@ -51,11 +53,15 @@ export interface WaMessageLike {
   message?: WaContent | null;
   messageTimestamp?: WaTime;
   pushName?: string | null;
+  verifiedBizName?: string | null;
 }
 
 export interface WaChat {
   id: string;
   name?: string | null;
+  displayName?: string | null;
+  pnJid?: string | null;
+  lidJid?: string | null;
   conversationTimestamp?: WaTime;
   unreadCount?: number | null;
 }
@@ -65,6 +71,7 @@ export interface WaContact {
   readonly id: string;
   readonly name?: string | null;
   readonly notify?: string | null;
+  readonly verifiedName?: string | null;
   readonly lid?: string;
   readonly jid?: string;
 }

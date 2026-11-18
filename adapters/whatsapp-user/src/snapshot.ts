@@ -11,6 +11,7 @@ export interface StoreSnapshot {
     id: string;
     name: string | null;
     notify: string | null;
+    verifiedName?: string | null;
   }[];
   readonly aliases: { id: string; linked: string[] }[];
   readonly pushNames: { id: string; name: string; at: number }[];
@@ -63,7 +64,11 @@ function valid(value: unknown): value is StoreSnapshot {
     ) &&
     rows(
       value.names,
-      (row) => typeof row.id === "string" && text(row.name) && text(row.notify),
+      (row) =>
+        typeof row.id === "string" &&
+        text(row.name) &&
+        text(row.notify) &&
+        (row.verifiedName === undefined || text(row.verifiedName)),
     ) &&
     rows(
       value.aliases,

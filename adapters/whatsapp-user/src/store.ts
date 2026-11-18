@@ -1,6 +1,13 @@
 import type { Message, Room } from "@tsuba/serve-kit";
 import { proto } from "@whiskeysockets/baileys";
-import { isRoomJid, mapMessage, mapRoom, shown, toSeconds } from "./mapping";
+import {
+  isRoomJid,
+  jidUser,
+  mapMessage,
+  mapRoom,
+  shown,
+  toSeconds,
+} from "./mapping";
 import type { StoreSnapshot } from "./snapshot";
 import type {
   WaChat,
@@ -26,6 +33,10 @@ function personalJid(jid: string): string | undefined {
     : undefined;
 }
 
+function phoneJid(jid: string): boolean {
+  return /^\d+@s\.whatsapp\.net$/.test(jid);
+}
+
 /**
  * What WhatsApp has pushed while syncing and connected, including the saved
  * cache from earlier runs. WhatsApp cannot fetch a room's older history.
@@ -34,7 +45,11 @@ export class WaStore {
   private readonly chats = new Map<string, Omit<WaChat, "id">>();
   private readonly names = new Map<
     string,
-    { name: string | undefined; notify: string | undefined }
+    {
+      name: string | undefined;
+      notify: string | undefined;
+      verifiedName: string | undefined;
+    }
   >();
   private readonly aliases = new Map<string, Set<string>>();
   private readonly pushNames = new Map<string, { name: string; at: number }>();
@@ -51,7 +66,6 @@ export class WaStore {
         unreadCount: unread,
       })),
     );
-    this.setNames(snapshot.names);
     for (const { id, linked } of snapshot.aliases)
       this.aliases.set(id, new Set(linked));
     this.setGroups(snapshot.subjects);
@@ -61,8 +75,9 @@ export class WaStore {
       const entry = this.entry(raw.key);
       if (entry) entry.editedAt = editedAt;
     }
+    this.setNames(snapshot.names);
     for (const { id, name, at } of snapshot.pushNames)
-      this.pushNames.set(id, { name, at });
+      this.setPushName(id, name, at);
   }
 
   snapshot(): StoreSnapshot {
@@ -78,6 +93,7 @@ export class WaStore {
         id,
         name: contact.name ?? null,
         notify: contact.notify ?? null,
+        ...(contact.verifiedName && { verifiedName: contact.verifiedName }),
       })),
       aliases: [...this.aliases].map(([id, linked]) => ({
         id,
@@ -104,11 +120,15 @@ export class WaStore {
   }
 
   setChats(chats: WaChat[]): void {
-    for (const { id, ...rest } of chats) {
+    for (const { id, pnJid, lidJid, displayName, name, ...rest } of chats) {
       if (!isRoomJid(id)) continue;
+      if (personalJid(id)) this.linkAliases([id, pnJid, lidJid]);
       const known = this.chats.get(id);
       const merged = { ...known };
-      for (const [key, value] of Object.entries(rest))
+      for (const [key, value] of Object.entries({
+        ...rest,
+        name: name?.trim() || displayName?.trim(),
+      }))
         if (value != null) Object.assign(merged, { [key]: value });
       this.chats.set(id, merged);
     }
@@ -118,17 +138,12 @@ export class WaStore {
     for (const contact of names) {
       const id = personalJid(contact.id);
       if (!id) continue;
-      const ids = [id, contact.lid, contact.jid].flatMap((value) =>
-        value ? (personalJid(value) ?? []) : [],
-      );
-      const linked = new Set(
-        ids.flatMap((alias) => [...(this.aliases.get(alias) ?? [alias])]),
-      );
-      for (const alias of linked) this.aliases.set(alias, linked);
+      this.linkAliases([id, contact.lid, contact.jid]);
       const known = this.names.get(id);
       this.names.set(id, {
-        name: contact.name || known?.name,
-        notify: contact.notify || known?.notify,
+        name: contact.name?.trim() || known?.name,
+        notify: contact.notify?.trim() || known?.notify,
+        verifiedName: contact.verifiedName?.trim() || known?.verifiedName,
       });
     }
   }
@@ -150,20 +165,23 @@ export class WaStore {
   }
 
   put(raw: WaMessageLike): Message | null {
-    const mapped = mapMessage(raw);
     const roomId = raw.key.remoteJid;
     const id = raw.key.id;
+    if (roomId && isRoomJid(roomId) && !raw.key.fromMe) {
+      const direct = personalJid(roomId);
+      // These Baileys key fields describe the sender, not the recipient.
+      if (direct)
+        this.linkAliases([direct, raw.key.senderPn, raw.key.senderLid]);
+      const sender = direct ?? personalJid(raw.key.participant ?? "");
+      if (sender) {
+        this.setPushName(sender, raw.pushName, toSeconds(raw.messageTimestamp));
+        if (raw.verifiedBizName?.trim())
+          this.setNames([{ id: sender, verifiedName: raw.verifiedBizName }]);
+      }
+    }
+    const mapped = mapMessage(raw);
     if (!mapped || !roomId || !id) return null;
     this.setChats([{ id: roomId }]);
-    const sender = personalJid(raw.key.participant ?? roomId);
-    const at = toSeconds(raw.messageTimestamp) ?? 0;
-    if (
-      sender &&
-      !raw.key.fromMe &&
-      raw.pushName &&
-      at >= (this.pushNames.get(sender)?.at ?? 0)
-    )
-      this.pushNames.set(sender, { name: raw.pushName, at });
     const room = this.messages.get(roomId) ?? new Map<string, Entry>();
     this.messages.set(roomId, room);
     room.set(id, { raw, editedAt: room.get(id)?.editedAt ?? null });
@@ -201,17 +219,25 @@ export class WaStore {
       const chat = this.chats.get(id) ?? {};
       const newest = this.page(id, 1).messages[0];
       const personal = personalJid(id) ?? id;
-      const aliases = [...(this.aliases.get(personal) ?? [personal])];
+      let aliases = [...(this.aliases.get(personal) ?? [personal])];
+      const phones = aliases.filter(phoneJid);
+      if (phones.length > 1) aliases = [personal];
       const contacts = aliases.flatMap((alias) => this.names.get(alias) ?? []);
+      const label = (value?: string | null) =>
+        value?.trim() &&
+        !aliases.some((alias) => value === alias || value === jidUser(alias));
       const pushed = aliases
         .flatMap((alias) => this.pushNames.get(alias) ?? [])
         .sort((left, right) => right.at - left.at)[0]?.name;
       const name = id.endsWith("@g.us")
         ? this.subjects.get(id) || chat.name
-        : contacts.find((contact) => contact.name)?.name ||
-          chat.name ||
-          contacts.find((contact) => contact.notify)?.notify ||
-          pushed;
+        : contacts.find((contact) => label(contact.name))?.name ||
+          (label(chat.name) ? chat.name : undefined) ||
+          (label(pushed) ? pushed : undefined) ||
+          contacts.find((contact) => label(contact.notify))?.notify ||
+          contacts.find((contact) => label(contact.verifiedName))
+            ?.verifiedName ||
+          (phones.length === 1 && phones[0] ? jidUser(phones[0]) : undefined);
       return mapRoom(id, { ...chat, name: name ?? null }, newest);
     });
     rooms.sort(
@@ -246,6 +272,28 @@ export class WaStore {
 
   has(roomId: string, id: string): boolean {
     return this.messages.get(roomId)?.has(id) ?? false;
+  }
+
+  private linkAliases(values: (string | null | undefined)[]): void {
+    const ids = new Set(
+      values.flatMap((value) => (value ? (personalJid(value) ?? []) : [])),
+    );
+    if (ids.size < 2) return;
+    const linked = new Set(
+      [...ids].flatMap((alias) => [...(this.aliases.get(alias) ?? [alias])]),
+    );
+    for (const alias of linked) this.aliases.set(alias, linked);
+  }
+
+  private setPushName(
+    id: string,
+    name: string | null | undefined,
+    timestamp: number | null,
+  ): void {
+    const at = timestamp ?? 0;
+    const title = name?.trim();
+    if (title && at >= (this.pushNames.get(id)?.at ?? 0))
+      this.pushNames.set(id, { name: title, at });
   }
 
   private entry(key: WaKey): Entry | undefined {
