@@ -5,14 +5,26 @@ import adapterPackage from "../package.json";
 // was measured here. 2048 code points is at most 4096 UTF-16 units, the body
 // limit of WhatsApp's own Cloud API, so it stays under any limit seen so far.
 const MAX_TEXT = 2048;
+// https://faq.whatsapp.com/453914586839706/ — 64 MB video on slower
+// connections; the shared multipart implementation buffers the whole upload,
+// so apply this adapter ceiling to documents too (WhatsApp itself allows 2 GB).
+const MAX_UPLOAD = 64_000_000;
 
 export const CAPABILITIES: Capabilities = {
   provider: { id: "whatsapp-user", name: "WhatsApp" },
   account: { kind: "user" },
   adapter: { name: "tsuba-whatsapp-user", version: adapterPackage.version },
   features: {
-    // Optional profile pictures; no message attachments.
+    // Message attachments and optional profile pictures share /media.
     "attachments.read": {},
+    "attachments.send": {
+      maxBytes: MAX_UPLOAD,
+      caption: true,
+      // Conservative text budget; also applies to document captions.
+      captionMaxLength: 1024,
+      // Omit types: any MIME type can be sent as a document.
+      receipt: "accepted",
+    },
     "avatars.read": {},
     // Chats WhatsApp pushed since this process started (see complete:false).
     "rooms.list": {},

@@ -146,6 +146,7 @@ test("the declaration is exactly what the backend performs", async () => {
   const { request, handle } = setup();
   expect(Object.keys(CAPABILITIES.features).sort()).toEqual([
     "attachments.read",
+    "attachments.send",
     "avatars.read",
     "messages.read",
     "messages.reply",

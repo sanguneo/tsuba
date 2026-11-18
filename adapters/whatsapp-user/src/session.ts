@@ -20,6 +20,8 @@ export function reconnectDelay(attempt: number): number {
 
 export interface WaLink {
   profilePictureUrl(jid: string): Promise<string | undefined>;
+  downloadMedia: WaSocket["downloadMedia"];
+  sendMedia: WaSocket["sendMedia"];
   state(): WaState;
   subscribe(listener: (event: WaLinkEvent) => void): () => void;
   send(
@@ -108,6 +110,19 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
       if (state !== "open" || !socket) return undefined;
       return socket.profilePictureUrl(jid);
     },
+    async downloadMedia(message, signal) {
+      if (state !== "open" || !socket)
+        throw new AdapterError("BUSY", "WhatsApp is not connected yet");
+      return socket.downloadMedia(message, signal);
+    },
+    async sendMedia(jid, file, caption, quoted) {
+      if (state !== "open" || !socket)
+        throw new AdapterError(
+          "BUSY",
+          "WhatsApp is not connected yet; nothing was sent",
+        );
+      return socket.sendMedia(jid, file, caption, quoted);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -125,3 +140,5 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
     },
   };
 }
+
+import { AdapterError } from "@tsuba/serve-kit";

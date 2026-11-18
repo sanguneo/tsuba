@@ -21,6 +21,21 @@ export interface WaCaptioned {
   contextInfo?: WaContextInfo | null;
 }
 
+export interface WaMedia extends WaCaptioned {
+  readonly mimetype?: string | null;
+  readonly fileName?: string | null;
+  readonly fileLength?: WaTime;
+  readonly width?: number | null;
+  readonly height?: number | null;
+  readonly seconds?: number | null;
+  readonly ptt?: boolean | null;
+  readonly gifPlayback?: boolean | null;
+  readonly viewOnce?: boolean | null;
+  readonly url?: string | null;
+  readonly directPath?: string | null;
+  readonly mediaKey?: Uint8Array | null;
+}
+
 export interface WaWrapper {
   message?: WaContent | null;
 }
@@ -31,14 +46,15 @@ export interface WaContent {
     text?: string | null;
     contextInfo?: WaContextInfo | null;
   } | null;
-  imageMessage?: WaCaptioned | null;
-  videoMessage?: WaCaptioned | null;
-  documentMessage?: WaCaptioned | null;
-  audioMessage?: WaCaptioned | null;
-  stickerMessage?: WaCaptioned | null;
+  imageMessage?: WaMedia | null;
+  videoMessage?: WaMedia | null;
+  documentMessage?: WaMedia | null;
+  audioMessage?: WaMedia | null;
+  stickerMessage?: WaMedia | null;
   ephemeralMessage?: WaWrapper | null;
   viewOnceMessage?: WaWrapper | null;
   viewOnceMessageV2?: WaWrapper | null;
+  viewOnceMessageV2Extension?: WaWrapper | null;
   documentWithCaptionMessage?: WaWrapper | null;
   editedMessage?: WaWrapper | null;
   protocolMessage?: unknown;
@@ -113,6 +129,16 @@ export interface WaSocket {
     text: string,
     quoted?: WaMessageLike,
   ): Promise<WaMessageLike | undefined>;
+  sendMedia(
+    jid: string,
+    file: UploadFile,
+    caption?: string,
+    quoted?: WaMessageLike,
+  ): Promise<WaMessageLike | undefined>;
+  downloadMedia(
+    message: WaMessageLike,
+    signal: AbortSignal,
+  ): Promise<MediaFile["body"]>;
   close(): Promise<void>;
 }
 
@@ -126,3 +152,5 @@ export type WaState =
   | "forbidden";
 
 export type WaLinkEvent = WaDataEvent | { type: "state"; state: WaState };
+
+import type { MediaFile, UploadFile } from "@tsuba/serve-kit";

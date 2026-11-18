@@ -32,6 +32,9 @@ test("/send refuses a LID write before calling the SDK when own LID has not arri
             },
             profilePictureUrl: async () => undefined,
             groupFetchAllParticipating: async () => ({}),
+            updateMediaMessage: async () => {
+              throw new Error("Unexpected media refresh");
+            },
             async sendMessage() {
               sends++;
               return proto.WebMessageInfo.fromObject({

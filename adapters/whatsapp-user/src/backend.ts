@@ -1,13 +1,20 @@
 import {
   type AdapterBackend,
   AdapterError,
+  type Message,
   type StreamUpdate,
 } from "@tsuba/serve-kit";
-import { isRoomJid } from "./mapping";
+import {
+  isRoomJid,
+  MESSAGE_MEDIA_PREFIX,
+  mediaLocation,
+  messageAttachment,
+} from "./mapping";
 import { type AvatarOptions, RoomAvatars } from "./room-avatars";
 import type { WaLink } from "./session";
 import { WaStore } from "./store";
 import { applyStoreEvent } from "./store-events";
+import type { WaMessageLike } from "./types";
 
 function roomJid(value: string): string {
   if (!isRoomJid(value))
@@ -128,10 +135,7 @@ export function whatsappUserBackend(
     requireLogin();
     switch (link.state()) {
       case "forbidden":
-        throw new AdapterError(
-          "FORBIDDEN",
-          "WhatsApp refused this account; nothing was sent",
-        );
+        throw new AdapterError("FORBIDDEN", "WhatsApp refused this account");
       case "conflict":
         throw new AdapterError(
           "BUSY",
@@ -140,11 +144,38 @@ export function whatsappUserBackend(
       case "open":
         return;
       default:
-        throw new AdapterError(
-          "BUSY",
-          "WhatsApp is not connected yet; nothing was sent",
-        );
+        throw new AdapterError("BUSY", "WhatsApp is not connected yet");
     }
+  }
+
+  async function send(
+    roomId: string,
+    replyTo: string | undefined,
+    submit: (quoted?: WaMessageLike) => Promise<WaMessageLike | undefined>,
+  ): Promise<Message> {
+    roomJid(roomId);
+    requireOpen();
+    const quoted =
+      replyTo === undefined ? undefined : store.find(roomId, replyTo);
+    if (replyTo !== undefined && !quoted)
+      throw new AdapterError(
+        "NOT_FOUND",
+        "Only messages retained by this adapter can be replied to",
+      );
+    let sent: WaMessageLike | undefined;
+    try {
+      sent = await submit(quoted);
+    } catch (error) {
+      throw sendError(error);
+    }
+    const message = sent && store.put(sent);
+    if (!message)
+      throw new AdapterError(
+        "INTERNAL",
+        "WhatsApp did not describe the sent message; its outcome is unknown",
+      );
+    changed();
+    return message;
   }
 
   return {
@@ -161,7 +192,19 @@ export function whatsappUserBackend(
     },
     async media(id, signal) {
       requireLogin();
-      return avatars.media(id, signal);
+      if (!id.startsWith(MESSAGE_MEDIA_PREFIX))
+        return avatars.media(id, signal);
+      const location = mediaLocation(id);
+      const raw = location && store.find(location.roomId, location.messageId);
+      const attachment = raw && messageAttachment(raw);
+      if (!raw || attachment?.id !== id)
+        throw new AdapterError("NOT_FOUND", "No such WhatsApp attachment");
+      requireOpen();
+      return {
+        body: await link.downloadMedia(raw, signal),
+        ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+        ...(attachment.name ? { name: attachment.name } : {}),
+      };
     },
     async readMessages({ roomId, limit, before }) {
       requireLogin();
@@ -186,30 +229,13 @@ export function whatsappUserBackend(
         listeners.delete(deliver);
       };
     },
-    async send(roomId, text, { replyTo }) {
-      roomJid(roomId);
-      requireOpen();
-      const quoted =
-        replyTo === undefined ? undefined : store.find(roomId, replyTo);
-      if (replyTo !== undefined && !quoted)
-        throw new AdapterError(
-          "NOT_FOUND",
-          "Only messages retained by this adapter can be replied to",
-        );
-      let sent: Awaited<ReturnType<WaLink["send"]>>;
-      try {
-        sent = await link.send(roomId, text, quoted);
-      } catch (error) {
-        throw sendError(error);
-      }
-      const message = sent && store.put(sent);
-      if (!message)
-        throw new AdapterError(
-          "INTERNAL",
-          "WhatsApp did not describe the sent message; its outcome is unknown",
-        );
-      changed();
-      return message;
+    send(roomId, text, { replyTo }) {
+      return send(roomId, replyTo, (quoted) => link.send(roomId, text, quoted));
+    },
+    upload(roomId, file, { caption, replyTo }) {
+      return send(roomId, replyTo, (quoted) =>
+        link.sendMedia(roomId, file, caption, quoted),
+      );
     },
   };
 }

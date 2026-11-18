@@ -28,6 +28,9 @@ test("pairing requests desktop full sync and reconnect keeps a compatible web pa
         ev: { on() {} },
         profilePictureUrl: async () => undefined,
         sendMessage: async () => undefined,
+        updateMediaMessage: async () => {
+          throw new Error("Unexpected media refresh");
+        },
         groupFetchAllParticipating: async () => ({}),
         end() {},
       };

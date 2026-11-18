@@ -10,6 +10,10 @@ test("serve-kit accepts the personal WhatsApp declaration with its backend", () 
       profilePictureUrl: async () => undefined,
       onEvent() {},
       sendText: async () => undefined,
+      sendMedia: async () => undefined,
+      downloadMedia: async () => {
+        throw new Error("Unexpected download");
+      },
       close: async () => {},
     }),
     schedule: () => () => {},

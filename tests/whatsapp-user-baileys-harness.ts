@@ -16,6 +16,9 @@ import { ROOM } from "./whatsapp-user-fixtures";
 
 export async function setup(
   fetchGroups: BaileysLike["groupFetchAllParticipating"] = async () => ({}),
+  refreshMedia: BaileysLike["updateMediaMessage"] = async () => {
+    throw new Error("Unexpected media refresh");
+  },
 ) {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-"));
   const handlers = new EventEmitter();
@@ -47,6 +50,7 @@ export async function setup(
       });
     },
     groupFetchAllParticipating: fetchGroups,
+    updateMediaMessage: refreshMedia,
     end() {
       ended++;
     },

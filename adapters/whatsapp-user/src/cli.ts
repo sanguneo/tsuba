@@ -90,6 +90,8 @@ if (command !== "login" && command !== "serve") {
     token:
       process.env.TSUBA_WHATSAPP_USER_HTTP_TOKEN ?? required("TSUBA_TOKEN"),
     port: Number(process.env.TSUBA_WHATSAPP_USER_PORT ?? 8795),
+    // The SDK may wait on the linked device before it can start a media reply.
+    idleTimeout: 90,
     hostname: process.env.TSUBA_HOST ?? "127.0.0.1",
     icon: {
       bytes: new Uint8Array(await Bun.file(iconPath).arrayBuffer()),
