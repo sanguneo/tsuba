@@ -10,10 +10,11 @@ import {
 } from "../adapters/whatsapp-user/src/baileys";
 import { CAPABILITIES } from "../adapters/whatsapp-user/src/capabilities";
 import { connectWhatsApp } from "../adapters/whatsapp-user/src/session";
+import { WaStore } from "../adapters/whatsapp-user/src/store";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { bounded, deferred } from "./harness/barriers";
 
-export async function setupNames() {
+export async function setupNames(store = new WaStore()) {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-names-"));
   const emitter = new EventEmitter();
   const ev = {
@@ -62,7 +63,7 @@ export async function setupNames() {
   const { handle } = createHandler({
     token: "synthetic-names-token",
     capabilities: CAPABILITIES,
-    backend: whatsappUserBackend(link),
+    backend: whatsappUserBackend(link, { store }),
   });
   await bounded(made.promise, "synthetic socket ready");
   async function rooms() {
@@ -95,5 +96,5 @@ export async function setupNames() {
     }
     return titles;
   }
-  return { ev, link, groups, fetched, rooms };
+  return { ev, link, groups, fetched, rooms, store };
 }
