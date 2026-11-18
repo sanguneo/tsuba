@@ -150,7 +150,7 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 | `room.updated` | 예약 | `{ok, room}` — 제목·안 읽음 수·마지막 메시지 | 목록 실시간 갱신 |
 | `typing` | 예약 | `{ok, roomId, senderId}` | 입력 중 표시 |
 
-- 이어 읽기는 `message` 만 다시 보냅니다. 끊긴 동안의 수정·삭제·반응은 다시 오지 않으니,
+- 이어 읽기는 `message` 만 다시 보냅니다. 끊긴 동안의 수정·삭제·반응·발신 상태 변경은 다시 오지 않으니,
   정확해야 하는 클라이언트는 `/messages` 를 다시 읽습니다.
 - `message.deleted` 가 오지 않았다고 메시지가 남아 있다는 증거는 아닙니다.
 - 클라이언트는 이 버전이 나열하지 않은 이벤트를 건너뜁니다. 새 이벤트의 이름은
@@ -165,6 +165,12 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 | `POST /delete` | `{roomId, messageId}` | `{ok}` |
 | `POST /react` | `{roomId, messageId, emojis}` — 이 계정의 반응을 **통째로** 이 목록으로, `[]` 는 없앰 | `{ok, reactions}` |
 | `POST /read` | `{roomId, messageId}` — 그 메시지까지 읽음 | `{ok}` |
+
+`Message.deliveryStatus`(0.2.9)는 발신 메시지의 확인된 상태를 `sent`(서버 접수),
+`delivered`(전달), `read`(읽음)로 나타냅니다. 확인되지 않았거나 지원하지 않으면 필드를
+생략합니다. 그룹의 전달·읽음은 한 명 이상에게서 확인됐다는 뜻이며, 수신자 신원은
+노출하지 않습니다. 상태는 뒤로 돌아가지 않으며, 실시간 갱신은 새 `message` 대신
+현재 메시지 전체를 담은 `message.edited` 로 보냅니다.
 
 반응을 더하거나 빼는 대신 목록을 통째로 정하므로, 같은 요청을 두 번 보내도 결과가
 같습니다. `Reaction` 은 `{emoji, count, mine}` 이고, 유니코드 이모지로 부를 수 있는 것만
