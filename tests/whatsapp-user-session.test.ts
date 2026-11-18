@@ -5,6 +5,7 @@ import {
   reconnectDelay,
 } from "../adapters/whatsapp-user/src/session";
 import type { WaState } from "../adapters/whatsapp-user/src/types";
+import { bounded, deferred } from "./harness/barriers";
 import { socketFactory, text } from "./whatsapp-user-fixtures";
 import { setupCache } from "./whatsapp-user-persistence-harness";
 
@@ -40,17 +41,19 @@ test("backoff doubles from one second and stops at a minute", () => {
   ]);
 });
 
-test("a dropped connection is reopened with growing delays until one opens", () => {
+test("a dropped connection is reopened with growing delays until one opens", async () => {
   const { current, scheduled, sockets, states, link } = setup();
   expect(link.state()).toBe("connecting");
   current().emit({ type: "close", statusCode: 428 });
   expect(link.state()).toBe("reconnecting");
   expect(scheduled.map(({ delay }) => delay)).toEqual([1_000]);
   scheduled[0]?.run();
+  await new Promise<void>((done) => setImmediate(done));
   expect(sockets).toHaveLength(2);
   current().emit({ type: "close", statusCode: 408 });
   expect(scheduled.map(({ delay }) => delay)).toEqual([1_000, 2_000]);
   scheduled[1]?.run();
+  await new Promise<void>((done) => setImmediate(done));
   current().emit({ type: "open" });
   expect(link.state()).toBe("open");
   current().emit({ type: "close", statusCode: 428 });
@@ -58,12 +61,13 @@ test("a dropped connection is reopened with growing delays until one opens", () 
   expect(states).toEqual(["reconnecting", "open", "reconnecting"]);
 });
 
-test("restart-required reopens at once without counting as a failure", () => {
+test("restart-required reopens without backoff after the retired socket drains", async () => {
   const { current, scheduled, link } = setup();
   current().emit({ type: "close", statusCode: 515 });
   expect(link.state()).toBe("connecting");
   expect(scheduled.map(({ delay }) => delay)).toEqual([0]);
   scheduled[0]?.run();
+  await new Promise<void>((done) => setImmediate(done));
   current().emit({ type: "close", statusCode: 428 });
   expect(scheduled.at(-1)?.delay).toBe(1_000);
 });
@@ -94,7 +98,7 @@ test("a QR code on a running adapter means it was never linked: final, nothing s
   expect(events).toEqual(["state"]);
 });
 
-test("data events pass through; a replaced socket's late events are ignored", () => {
+test("data events pass through; a replaced socket's late events are ignored", async () => {
   const { current, scheduled, link } = setup();
   const seen: string[] = [];
   link.subscribe((event) => {
@@ -104,9 +108,32 @@ test("data events pass through; a replaced socket's late events are ignored", ()
   first.emit({ type: "messages", messages: [text("1", "a")], live: true });
   first.emit({ type: "close", statusCode: 428 });
   scheduled[0]?.run();
+  await new Promise<void>((done) => setImmediate(done));
   first.emit({ type: "messages", messages: [text("2", "late")], live: true });
   current().emit({ type: "messages", messages: [text("3", "b")], live: true });
   expect(seen).toEqual(["1", "3"]);
+});
+
+test("stop waits for a retired socket to drain and prevents its scheduled reconnect", async () => {
+  const { current, scheduled, sockets, link } = setup();
+  const held = current();
+  const release = deferred<void>();
+  held.close = () => release.promise;
+  held.emit({ type: "close", statusCode: 515 });
+  scheduled[0]?.run();
+  let stopped = false;
+  const stopping = link.stop().then(() => {
+    stopped = true;
+  });
+  try {
+    await new Promise<void>((done) => setImmediate(done));
+    expect(stopped).toBe(false);
+    expect(sockets).toHaveLength(1);
+  } finally {
+    release.resolve();
+    await bounded(stopping, "retired socket drained");
+  }
+  expect(sockets).toHaveLength(1);
 });
 
 test("an open that throws is retried with backoff, and stop cancels the pending retry", async () => {

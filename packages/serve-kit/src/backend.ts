@@ -49,6 +49,8 @@ export interface Message {
   sentAt: string;
   editedAt?: string;
   fromMe: boolean;
+  /** Confirmed outbound receipt; groups mean any observed recipient. */
+  deliveryStatus?: "sent" | "delivered" | "read";
   replyTo?: string;
   /** Shared by the messages of one album; each stays its own message. */
   groupId?: string;
@@ -104,8 +106,10 @@ export interface MediaFile {
 }
 
 /**
- * What a backend reports to the stream. `message` is a new message; the others
- * are sent only when the declaration lists them in `messages.stream.events`.
+ * What a backend reports to the stream. `message` is a new message;
+ * `message.edited` carries the whole message after an edit or receipt change.
+ * Events besides `message` are sent only when the declaration lists them
+ * in `messages.stream.events`.
  */
 export type StreamUpdate =
   | { event: "message"; message: Message }

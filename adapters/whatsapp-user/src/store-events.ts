@@ -1,9 +1,10 @@
 import type { StreamUpdate } from "@tsuba/serve-kit";
 import { toSeconds } from "./mapping";
+import { deliveryStatus } from "./receipts";
 import type { WaStore } from "./store";
 import type { WaDataEvent } from "./types";
 
-/** Login and serve must apply the same cache mutations; history is never live. */
+/** Login and serve share mutations; history only streams known receipt advances. */
 export function applyStoreEvent(
   store: WaStore,
   event: WaDataEvent,
@@ -27,14 +28,23 @@ export function applyStoreEvent(
       store.deleteChats(event.ids);
       return [];
     case "messages":
-      return event.messages.flatMap((raw) => {
+      return event.messages.flatMap<StreamUpdate>((raw) => {
         const { remoteJid, id } = raw.key;
         const seen = !!remoteJid && !!id && store.has(remoteJid, id);
+        const previous = remoteJid && id && store.find(remoteJid, id);
+        const receipt = previous ? deliveryStatus(previous) : undefined;
         const message = store.put(raw);
-        return event.live && message && !seen
-          ? [{ event: "message", message } satisfies StreamUpdate]
+        if (!message) return [];
+        if (event.live && !seen)
+          return [{ event: "message", message } satisfies StreamUpdate];
+        return seen && message.deliveryStatus !== receipt
+          ? [{ event: "message.edited", message } satisfies StreamUpdate]
           : [];
       });
+    case "receipt": {
+      const message = store.receipt(event.key, event.update);
+      return message ? [{ event: "message.edited", message }] : [];
+    }
     case "edit": {
       const message = store.edit(event.key, event.content, toSeconds(event.at));
       return message ? [{ event: "message.edited", message }] : [];

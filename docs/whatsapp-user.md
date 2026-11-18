@@ -112,8 +112,17 @@ QR, 세션 내용은 어디에도 출력하지 않습니다(Baileys 의 로그�
 | `attachments.send` | `maxBytes: 64000000`, `captionMaxLength: 1024`, `receipt: accepted` | `/upload` 로 한 파일과 선택적 캡션·답장 인용을 보냅니다. MIME 허용 목록은 없습니다 |
 | `messages.read` | `paging: before-id`, `maxLimit: 100` | **어댑터가 받은 메시지**를 방마다 최근 200개까지 메모리에서 답하며, 최근 50개는 재시작 뒤에도 유지합니다. WhatsApp 에는 방의 지난 기록을 가져오는 호출이 없습니다. `hasEarlier` 는 현재 보관한 기록 안에서의 뜻입니다 |
 | `messages.stream` | `resume: none`, 이벤트 `message.edited`, `message.deleted` | 연결 중 도착한 새 메시지·수정·삭제를 그대로 전합니다. 끊겼다 이으면 놓친 것을 되짚을 커서가 없어 `resume` 은 `none` 입니다 |
-| `messages.send` | `maxLength: 2048`, `receipt: accepted` | 글자 수 한도는 개인 계정에 대해 문서화되지 않았고 측정도 못 했습니다. 2048 코드포인트는 최대 4096 UTF-16 단위이며 WhatsApp 공식 Cloud API 의 본문 한도(4096)보다 작아 보수적입니다. `accepted` 는 WhatsApp 서버가 받았다는 뜻일 뿐 전달·읽음이 아닙니다 |
+| `messages.send` | `maxLength: 2048`, `receipt: accepted` | 글자 수 한도는 개인 계정에 대해 문서화되지 않았고 측정도 못 했습니다. 2048 코드포인트는 최대 4096 UTF-16 단위이며 WhatsApp 공식 Cloud API 의 본문 한도(4096)보다 작아 보수적입니다. `accepted` 는 WhatsApp 서버의 ACK를 받았다는 뜻입니다 |
 | `messages.reply` | — | 어댑터가 본 메시지만 인용할 수 있습니다. 모르는 메시지에 답하면 아무것도 보내지 않고 `NOT_FOUND` |
+
+텍스트와 첨부 모두 로컬 소켓 쓰기만 끝났을 때 성공으로 답하지 않습니다.
+서버 ACK가 없거나 오류를 돌려주면 결과 미확인(`INTERNAL`)으로 답하고 HTTP
+발송을 자동 재시도하지 않습니다. WhatsApp가 복호화 재시도를 요청하면 SDK는
+같은 방·같은 메시지 ID로 보관된 발신 원본만 조회할 수 있습니다.
+
+발신 메시지의 `deliveryStatus`는 확인된 `sent` → `delivered` → `read`만
+나타냅니다. 그룹에서 `delivered`·`read`는 구성원 한 명 이상이 확인됐다는
+뜻입니다. 어댑터는 이 상태를 저장하고, 변경되면 `message.edited`로 보냅니다.
 
 이미지, 영상, GIF 재생 영상, 음성·음성 메모, 문서, 스티커를 첨부로 표시하며
 캡션은 본문입니다. 한 번 보기 미디어는 노출하지 않습니다. 파일 바이트는

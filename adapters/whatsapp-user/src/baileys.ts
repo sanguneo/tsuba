@@ -5,19 +5,37 @@ import makeWASocket, {
   type BaileysEventMap,
   Browsers,
   downloadMediaMessage,
+  generateMessageIDV2,
   proto,
   useMultiFileAuthState,
   type WAMessage,
   WAMessageStubType,
 } from "@whiskeysockets/baileys";
 import { unwrap } from "./mapping";
-import type { WaContact, WaGroup, WaSocket, WaSocketEvent } from "./types";
+import type {
+  WaContact,
+  WaGroup,
+  WaMessageLike,
+  WaSocket,
+  WaSocketEvent,
+} from "./types";
 
 export type BaileysEvents = BaileysEventMap;
 type SocketConfig = Parameters<typeof makeWASocket>[0];
 
 /** The part of a Baileys socket this adapter uses; a test can stand in for it. */
 export interface BaileysLike {
+  authState: Pick<ReturnType<typeof makeWASocket>["authState"], "keys">;
+  ws: {
+    on(
+      event: string,
+      listener: (node: { attrs: Record<string, string> }) => void,
+    ): void;
+    off(
+      event: string,
+      listener: (node: { attrs: Record<string, string> }) => void,
+    ): void;
+  };
   profilePictureUrl: ReturnType<typeof makeWASocket>["profilePictureUrl"];
   ev: {
     on<E extends keyof BaileysEventMap>(
@@ -35,8 +53,15 @@ export interface BaileysLike {
 
 export interface BaileysOptions {
   authDir: string;
+  findMessage?: (
+    roomId: string,
+    messageId: string,
+  ) => WaMessageLike | undefined;
   makeSocket?: (config: SocketConfig) => BaileysLike;
 }
+
+const MESSAGE_ACK_EVENT = "CB:ack,class:message";
+const MESSAGE_ACK_TIMEOUT_MS = 10_000;
 
 const SILENT_LOGGER: NonNullable<SocketConfig["logger"]> = {
   level: "silent",
@@ -116,10 +141,23 @@ async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
  */
 export function openBaileys({
   authDir,
+  findMessage,
   makeSocket = makeWASocket,
 }: BaileysOptions): WaSocket {
   let handler: (event: WaSocketEvent) => void = () => {};
   let saving: Promise<void> = Promise.resolve();
+  let close: Promise<void> | undefined;
+  let authWriteFailed = false;
+  const disconnected = new AbortController();
+  const pendingAuth = new Set<Promise<unknown>>();
+  function trackAuth<T>(work: Promise<T>): Promise<T> {
+    pendingAuth.add(work);
+    void work.then(
+      () => pendingAuth.delete(work),
+      () => pendingAuth.delete(work),
+    );
+    return work;
+  }
   const emit = (event: WaSocketEvent) => handler(event);
   // SDK re-upload has no abort argument. Share its pending request and retain
   // the refreshed URL for this raw message until the store replaces/evicts it.
@@ -127,6 +165,14 @@ export function openBaileys({
 
   const ready = (async () => {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const setKeys = state.keys.set.bind(state.keys);
+    state.keys.set = (data) =>
+      trackAuth(
+        Promise.resolve(setKeys(data)).catch(() => {
+          authWriteFailed = true;
+          throw new Error("WhatsApp Signal key save failed");
+        }),
+      );
     const socket = makeSocket({
       auth: state,
       logger: SILENT_LOGGER,
@@ -136,9 +182,27 @@ export function openBaileys({
       browser: Browsers.ubuntu("Desktop"),
       syncFullHistory: true,
       generateHighQualityLinkPreview: false,
+      // Only answer a WhatsApp retry for the exact retained outgoing message.
+      // Do not retry a send that timed out at the adapter's HTTP boundary.
+      async getMessage({ remoteJid, id, fromMe }) {
+        if (!fromMe || !remoteJid || !id) return undefined;
+        const raw = findMessage?.(remoteJid, id);
+        return raw?.key.fromMe && raw.message
+          ? proto.Message.fromObject(raw.message)
+          : undefined;
+      },
     });
+    // The SDK buffers key changes inside Signal transactions. Waiting only for
+    // writes that have reached set() can miss a transaction still decrypting.
+    const keys = socket.authState.keys;
+    const transaction = keys.transaction.bind(keys);
+    keys.transaction = (work) => trackAuth(transaction(work));
     socket.ev.on("creds.update", () => {
-      saving = saving.then(saveCreds);
+      saving = trackAuth(
+        saving.then(saveCreds).catch(() => {
+          authWriteFailed = true;
+        }),
+      );
     });
     socket.ev.on("connection.update", (update) => {
       if (update.qr) emit({ type: "qr", qr: update.qr });
@@ -160,11 +224,13 @@ export function openBaileys({
           })
           .catch(() => emit({ type: "groupSyncFailed" }));
       }
-      if (update.connection === "close")
+      if (update.connection === "close") {
+        disconnected.abort();
         emit({
           type: "close",
           statusCode: statusCode(update.lastDisconnect?.error),
         });
+      }
     });
     socket.ev.on("messaging-history.set", (history) => {
       emit({ type: "chats", chats: history.chats });
@@ -210,6 +276,20 @@ export function openBaileys({
     );
     socket.ev.on("messages.update", (updates) => {
       for (const { key, update } of updates) {
+        if (
+          key.fromMe !== false &&
+          (update.status != null || update.userReceipt?.length)
+        )
+          emit({
+            type: "receipt",
+            key,
+            update: {
+              ...(update.status != null ? { status: update.status } : {}),
+              ...(update.userReceipt
+                ? { userReceipt: update.userReceipt }
+                : {}),
+            },
+          });
         const edited = update.message?.editedMessage?.message;
         if (edited)
           emit({
@@ -222,6 +302,11 @@ export function openBaileys({
           emit({ type: "delete", keys: [key] });
       }
     });
+    socket.ev.on("message-receipt.update", (updates) => {
+      for (const { key, receipt } of updates)
+        if (key.fromMe !== false)
+          emit({ type: "receipt", key, update: { userReceipt: [receipt] } });
+    });
     socket.ev.on("messages.delete", (deletion) => {
       if ("keys" in deletion) emit({ type: "delete", keys: deletion.keys });
     });
@@ -229,14 +314,59 @@ export function openBaileys({
   })();
   ready.catch(() => emit({ type: "close", statusCode: undefined }));
 
-  const send: BaileysLike["sendMessage"] = async (jid, content, options) => {
+  const send = async (
+    jid: string,
+    content: Parameters<BaileysLike["sendMessage"]>[1],
+    options: Parameters<BaileysLike["sendMessage"]>[2],
+  ): Promise<WaMessageLike | undefined> => {
     const { socket, creds } = await ready;
     if (jid.endsWith("@lid") && !creds.me?.lid)
       throw new AdapterError(
         "BUSY",
         "WhatsApp has not supplied this device's LID yet; nothing was sent",
       );
-    return socket.sendMessage(jid, content, options);
+    // sendMessage resolves after the local WebSocket write. Match the server's
+    // message ACK by id; attach before relay so a fast ACK cannot be missed.
+    const messageId = generateMessageIDV2(creds.me?.id);
+    let complete = (_accepted: boolean) => {};
+    const ack = new Promise<boolean>((resolve) => {
+      complete = resolve;
+    });
+    const onAck = (node: { attrs: Record<string, string> }) => {
+      if (node.attrs.id === messageId) complete(!node.attrs.error);
+    };
+    socket.ws.on(MESSAGE_ACK_EVENT, onAck);
+    try {
+      const sent = await socket.sendMessage(jid, content, {
+        ...options,
+        messageId,
+      });
+      if (!sent) return undefined;
+      const deadline = AbortSignal.any([
+        disconnected.signal,
+        AbortSignal.timeout(MESSAGE_ACK_TIMEOUT_MS),
+      ]);
+      const accepted = await abortable(ack, deadline).catch(
+        (error: unknown) => {
+          if (deadline.aborted && error === deadline.reason)
+            throw new AdapterError(
+              "INTERNAL",
+              "WhatsApp server acknowledgement was not confirmed",
+            );
+          throw error;
+        },
+      );
+      if (!accepted)
+        throw new AdapterError(
+          "INTERNAL",
+          "WhatsApp returned an error acknowledgement",
+        );
+      const status = proto.WebMessageInfo.Status.SERVER_ACK;
+      emit({ type: "receipt", key: sent.key, update: { status } });
+      return (sent.status ?? 0) < status ? { ...sent, status } : sent;
+    } finally {
+      socket.ws.off(MESSAGE_ACK_EVENT, onAck);
+    }
   };
 
   return {
@@ -376,11 +506,16 @@ export function openBaileys({
         }
       }
     },
-    async close() {
-      handler = () => {};
-      const held = await ready.catch(() => undefined);
-      held?.socket.end(undefined);
-      await saving;
+    close() {
+      close ??= (async () => {
+        handler = () => {};
+        disconnected.abort();
+        const held = await ready.catch(() => undefined);
+        held?.socket.end(undefined);
+        while (pendingAuth.size) await Promise.allSettled(pendingAuth);
+        if (authWriteFailed) throw new Error("WhatsApp auth state save failed");
+      })();
+      return close;
     },
   };
 }

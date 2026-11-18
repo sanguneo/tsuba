@@ -41,7 +41,11 @@ if (command !== "login" && command !== "serve") {
   );
   console.log("On the phone: WhatsApp > Linked devices > Link a device.");
   const result = await linkAccount({
-    open: () => openBaileys({ authDir }),
+    open: () =>
+      openBaileys({
+        authDir,
+        findMessage: (roomId, id) => cache.store.find(roomId, id),
+      }),
     onQr: (qr) => qrcode.generate(qr, { small: true }),
     signal: AbortSignal.timeout(LOGIN_DEADLINE_MS),
     cache,
@@ -70,7 +74,11 @@ if (command !== "login" && command !== "serve") {
     console.warn("tsuba-whatsapp-user room cache save failed"),
   );
   const link = connectWhatsApp({
-    open: () => openBaileys({ authDir }),
+    open: () =>
+      openBaileys({
+        authDir,
+        findMessage: (roomId, id) => cache.store.find(roomId, id),
+      }),
     schedule(run, delayMs) {
       const timer = setTimeout(run, delayMs);
       return () => clearTimeout(timer);
@@ -110,7 +118,13 @@ if (command !== "login" && command !== "serve") {
     process.once("SIGINT", done);
     process.once("SIGTERM", done);
   });
-  await server.stop(true);
-  await link.stop();
-  await cache.flush();
+  try {
+    await server.stop(true);
+  } finally {
+    try {
+      await link.stop();
+    } finally {
+      await cache.flush();
+    }
+  }
 }

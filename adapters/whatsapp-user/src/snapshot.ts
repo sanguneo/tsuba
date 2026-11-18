@@ -1,3 +1,5 @@
+import type { WaKey } from "./types";
+
 /** Versioned, account-local cache. Message bytes use Baileys' protobuf codec. */
 export interface StoreSnapshot {
   readonly version: 1;
@@ -17,6 +19,7 @@ export interface StoreSnapshot {
   readonly pushNames: { id: string; name: string; at: number }[];
   readonly subjects: { id: string; subject: string }[];
   readonly messages: { data: string; editedAt: number | null }[];
+  readonly receipts?: { key: WaKey; status: number }[];
 }
 
 export class StoreFileError extends Error {
@@ -92,7 +95,17 @@ function valid(value: unknown): value is StoreSnapshot {
     rows(
       value.messages,
       (row) => typeof row.data === "string" && number(row.editedAt),
-    )
+    ) &&
+    (value.receipts === undefined ||
+      rows(
+        value.receipts,
+        (row) =>
+          record(row.key) &&
+          typeof row.key.remoteJid === "string" &&
+          typeof row.key.id === "string" &&
+          row.key.fromMe === true &&
+          (row.status === 2 || row.status === 3 || row.status === 4),
+      ))
   );
 }
 

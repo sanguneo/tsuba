@@ -230,7 +230,10 @@ test.each([
 ] as const)(
   "Baileys upload routes %s to %s with its caption and quote",
   async (type, field) => {
-    const { wa, calls } = await setup();
+    const { wa, calls, ws, sent } = await setup();
+    sent.on("send", (id: string) =>
+      ws.emit("CB:ack,class:message", { attrs: { id } }),
+    );
     const quoted = text("quoted", "earlier");
     await wa.sendMedia(
       ROOM,
@@ -247,7 +250,7 @@ test.each([
           caption: "caption",
           ...(field === "document" ? { fileName: "sample" } : {}),
         },
-        options: { quoted },
+        options: { quoted, messageId: expect.any(String) },
       },
     ]);
   },

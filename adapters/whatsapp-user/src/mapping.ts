@@ -1,4 +1,5 @@
 import type { Attachment, Message, Room } from "@tsuba/serve-kit";
+import { deliveryStatus } from "./receipts";
 import type {
   WaChat,
   WaContent,
@@ -169,6 +170,7 @@ export function mapMessage(
   if (!id || !roomId || !isRoomJid(roomId) || seconds === null || !content)
     return null;
   const fromMe = raw.key.fromMe === true;
+  const receipt = deliveryStatus(raw);
   const author = raw.key.participant ?? roomId;
   const attachment =
     content.attachment && messageAttachment(raw, content.attachment);
@@ -182,6 +184,7 @@ export function mapMessage(
     sentAt: iso(seconds),
     ...(editedAt ? { editedAt: iso(editedAt) } : {}),
     fromMe,
+    ...(receipt ? { deliveryStatus: receipt } : {}),
     ...(attachment ? { attachments: [attachment] } : {}),
     ...(content.replyTo ? { replyTo: content.replyTo } : {}),
   };

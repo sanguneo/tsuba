@@ -64,12 +64,21 @@ export interface WaContent {
 /** Baileys hands timestamps over as a number or a `Long`. */
 export type WaTime = number | { toNumber(): number } | null | undefined;
 
+export interface WaReceipt {
+  userJid: string;
+  receiptTimestamp?: WaTime;
+  readTimestamp?: WaTime;
+  playedTimestamp?: WaTime;
+}
+
 export interface WaMessageLike {
   key: WaKey;
   message?: WaContent | null;
   messageTimestamp?: WaTime;
   pushName?: string | null;
   verifiedBizName?: string | null;
+  status?: number | null;
+  userReceipt?: WaReceipt[] | null;
 }
 
 export interface WaChat {
@@ -111,6 +120,11 @@ export type WaDataEvent =
   | { type: "chatsDeleted"; ids: string[] }
   /** `live` is a message that arrived while connected; history is not streamed. */
   | { type: "messages"; messages: WaMessageLike[]; live: boolean }
+  | {
+      type: "receipt";
+      key: WaKey;
+      update: Pick<WaMessageLike, "status" | "userReceipt">;
+    }
   | { type: "edit"; key: WaKey; content: WaContent; at: WaTime }
   | { type: "delete"; keys: WaKey[] };
 

@@ -50,6 +50,8 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
   let attempt = 0;
   let cancel: (() => void) | undefined;
   let stopped = false;
+  let draining: Promise<void> | undefined;
+  let drainFailed = false;
 
   function emit(event: WaLinkEvent) {
     for (const listener of listeners) listener(event);
@@ -59,15 +61,24 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
     state = next;
     emit({ type: "state", state });
   }
-  function finish(next: WaState, held: WaSocket) {
-    setState(next);
+  function retire(held: WaSocket) {
     socket = undefined;
-    void held.close();
+    draining = held.close().catch(() => {
+      drainFailed = true;
+    });
+  }
+  function finish(next: WaState, held: WaSocket) {
+    retire(held);
+    setState(next);
   }
   function retry(delay: number, next: WaState) {
     setState(next);
     socket = undefined;
-    cancel = schedule(connect, delay);
+    cancel = schedule(() => {
+      if (draining) {
+        void draining.then(connect);
+      } else connect();
+    }, delay);
   }
   function handle(held: WaSocket, event: WaSocketEvent) {
     if (stopped || held !== socket) return;
@@ -84,8 +95,11 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
         else if (event.statusCode === FORBIDDEN) finish("forbidden", held);
         else if (event.statusCode === CONNECTION_REPLACED)
           finish("conflict", held);
-        else if (event.statusCode === RESTART_REQUIRED) retry(0, "connecting");
-        else retry(reconnectDelay(attempt++), "reconnecting");
+        else {
+          retire(held);
+          if (event.statusCode === RESTART_REQUIRED) retry(0, "connecting");
+          else retry(reconnectDelay(attempt++), "reconnecting");
+        }
         return;
       default:
         emit(event);
@@ -93,6 +107,8 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
   }
   function connect() {
     cancel = undefined;
+    if (stopped) return;
+    draining = undefined;
     try {
       const held = open();
       socket = held;
@@ -135,8 +151,9 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
       stopped = true;
       cancel?.();
       const held = socket;
-      socket = undefined;
-      await held?.close();
+      if (held) retire(held);
+      await draining;
+      if (drainFailed) throw new Error("WhatsApp auth state save failed");
     },
   };
 }
