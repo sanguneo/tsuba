@@ -1,7 +1,7 @@
-# WhatsApp-Personal 어댑터
+# WhatsApp 어댑터
 
 개인 WhatsApp 계정으로 동작하는 어댑터입니다(`account.kind: "user"`,
-`provider.id: "whatsapp-user"`, saya 표시 이름 `WhatsApp-Personal`). 비공식
+`provider.id: "whatsapp-user"`, saya 표시 이름 `WhatsApp`). 비공식
 클라이언트 라이브러리 [Baileys](https://github.com/WhiskeySockets/Baileys)
 (`@whiskeysockets/baileys` 6.7.24, 버전 고정)로 WhatsApp Web 의 "연결된 기기"가
 됩니다.

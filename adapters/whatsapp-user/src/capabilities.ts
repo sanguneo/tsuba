@@ -7,7 +7,7 @@ import adapterPackage from "../package.json";
 const MAX_TEXT = 2048;
 
 export const CAPABILITIES: Capabilities = {
-  provider: { id: "whatsapp-user", name: "WhatsApp-Personal" },
+  provider: { id: "whatsapp-user", name: "WhatsApp" },
   account: { kind: "user" },
   adapter: { name: "tsuba-whatsapp-user", version: adapterPackage.version },
   features: {
