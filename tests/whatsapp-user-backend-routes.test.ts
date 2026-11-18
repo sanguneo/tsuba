@@ -160,10 +160,12 @@ test.each([ROOM, "100000000003@lid"])(
     const { handle, link } = setup();
     const response = await handle(post("/send", { roomId, text: "hello" }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
+    const answer = await response.json();
+    expect(answer).toMatchObject({
       ok: true,
       message: { id: "9000", fromMe: true, roomId },
     });
+    expect(answer).not.toHaveProperty("message.deliveryStatus");
     expect(link.sends).toEqual([{ jid: roomId, text: "hello" }]);
     const page = (await (
       await handle(get(`/messages?roomId=${roomId}`))
@@ -171,6 +173,25 @@ test.each([ROOM, "100000000003@lid"])(
     expect(page.messages.map(({ id }) => id)).toEqual(["9000"]);
   },
 );
+
+test("a receipt arriving before send resolves is retained in the send answer and history", async () => {
+  const { handle, link } = setup();
+  link.sendImpl = async () => {
+    const key = { remoteJid: ROOM, id: "9000", fromMe: true };
+    link.push({ type: "receipt", key, update: { status: 4 } });
+    return text("9000", "Synthetic outbound", { key, status: 1 });
+  };
+  const response = await handle(post("/send", { roomId: ROOM, text: "hello" }));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    message: { id: "9000", deliveryStatus: "read" },
+  });
+  expect(
+    await (await handle(get(`/messages?roomId=${ROOM}`))).json(),
+  ).toMatchObject({
+    messages: [{ id: "9000", deliveryStatus: "read" }],
+  });
+});
 
 test("a reply quotes the held message and refuses one it has not seen", async () => {
   const { handle, link } = setup();

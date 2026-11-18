@@ -8,6 +8,7 @@ import {
   shown,
   toSeconds,
 } from "./mapping";
+import { confirmedStatus } from "./receipts";
 import type { StoreSnapshot } from "./snapshot";
 import type {
   WaChat,
@@ -55,9 +56,16 @@ export class WaStore {
   private readonly pushNames = new Map<string, { name: string; at: number }>();
   private readonly subjects = new Map<string, string>();
   private readonly messages = new Map<string, Map<string, Entry>>();
+  // Receipts may precede the message or a send's resolution. Bound the cache.
+  private readonly pendingReceipts = new Map<
+    string,
+    { key: WaKey; status: number }
+  >();
 
   constructor(snapshot?: StoreSnapshot) {
     if (!snapshot) return;
+    for (const { key, status } of snapshot.receipts ?? [])
+      this.receipt(key, { status });
     this.setChats(
       snapshot.chats.map(({ id, name, at, unread }) => ({
         id,
@@ -83,6 +91,7 @@ export class WaStore {
   snapshot(): StoreSnapshot {
     return {
       version: 1,
+      receipts: [...this.pendingReceipts.values()],
       chats: [...this.chats].map(([id, chat]) => ({
         id,
         name: chat.name ?? null,
@@ -160,6 +169,9 @@ export class WaStore {
     for (const id of ids) {
       this.chats.delete(id);
       this.messages.delete(id);
+      for (const [receiptId, receipt] of this.pendingReceipts)
+        if (receipt.key.remoteJid === id)
+          this.pendingReceipts.delete(receiptId);
       this.subjects.delete(id);
     }
   }
@@ -183,12 +195,59 @@ export class WaStore {
     this.setChats([{ id: roomId }]);
     const room = this.messages.get(roomId) ?? new Map<string, Entry>();
     this.messages.set(roomId, room);
-    room.set(id, { raw, editedAt: room.get(id)?.editedAt ?? null });
+    const known = room.get(id);
+    const receiptId = JSON.stringify([roomId, id]);
+    const pending = this.pendingReceipts.get(receiptId);
+    const status = raw.key.fromMe
+      ? Math.max(
+          confirmedStatus(raw),
+          known ? confirmedStatus(known.raw) : 0,
+          pending?.status ?? 0,
+        )
+      : 0;
+    this.pendingReceipts.delete(receiptId);
+    const merged = {
+      ...raw,
+      ...(status ? { status } : {}),
+    };
+    room.set(id, { raw: merged, editedAt: known?.editedAt ?? null });
     if (room.size > MESSAGES_PER_ROOM) {
       const oldest = this.sorted(roomId)[0];
       if (oldest?.raw.key.id) room.delete(oldest.raw.key.id);
     }
-    return this.withSenderName(mapped);
+    const message = mapMessage(merged, known?.editedAt);
+    return message && this.withSenderName(message);
+  }
+
+  receipt(
+    key: WaKey,
+    update: Pick<WaMessageLike, "status" | "userReceipt">,
+  ): Message | null {
+    const { remoteJid, id } = key;
+    if (!remoteJid || !id || !isRoomJid(remoteJid) || key.fromMe === false)
+      return null;
+    const status = confirmedStatus(update);
+    if (!status) return null;
+    const entry = this.entry(key);
+    if (!entry) {
+      if (key.fromMe !== true) return null;
+      const receiptId = JSON.stringify([remoteJid, id]);
+      const previous = this.pendingReceipts.get(receiptId)?.status ?? 0;
+      this.pendingReceipts.set(receiptId, {
+        key: { remoteJid, id, fromMe: true },
+        status: Math.max(previous, status),
+      });
+      if (this.pendingReceipts.size > MESSAGES_PER_ROOM) {
+        const oldest = this.pendingReceipts.keys().next().value;
+        if (oldest) this.pendingReceipts.delete(oldest);
+      }
+      return null;
+    }
+    if (!entry.raw.key.fromMe || status <= confirmedStatus(entry.raw))
+      return null;
+    entry.raw = { ...entry.raw, status };
+    const message = mapMessage(entry.raw, entry.editedAt);
+    return message && this.withSenderName(message);
   }
 
   edit(key: WaKey, content: WaContent, at: number | null): Message | null {
@@ -203,6 +262,7 @@ export class WaStore {
   remove(keys: WaKey[]): { roomId: string; id: string }[] {
     const removed: { roomId: string; id: string }[] = [];
     for (const { remoteJid, id } of keys) {
+      this.pendingReceipts.delete(JSON.stringify([remoteJid, id]));
       if (remoteJid && id && this.messages.get(remoteJid)?.delete(id))
         removed.push({ roomId: remoteJid, id });
     }

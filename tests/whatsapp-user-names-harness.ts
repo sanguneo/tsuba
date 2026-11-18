@@ -13,6 +13,7 @@ import { connectWhatsApp } from "../adapters/whatsapp-user/src/session";
 import { WaStore } from "../adapters/whatsapp-user/src/store";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { bounded, deferred } from "./harness/barriers";
+import { fakeAuthState } from "./whatsapp-user-baileys-harness";
 
 export async function setupNames(store = new WaStore()) {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-names-"));
@@ -36,9 +37,11 @@ export async function setupNames(store = new WaStore()) {
     open: () =>
       openBaileys({
         authDir,
-        makeSocket() {
+        makeSocket(config) {
           made.resolve();
           return {
+            ws: emitter,
+            authState: fakeAuthState(config),
             profilePictureUrl: async () => undefined,
             ev,
             sendMessage: async () => undefined,

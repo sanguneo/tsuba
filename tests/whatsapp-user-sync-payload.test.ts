@@ -1,4 +1,5 @@
 import { expect, onTestFinished, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
 } from "../adapters/whatsapp-user/node_modules/@whiskeysockets/baileys";
 import { openBaileys } from "../adapters/whatsapp-user/src/baileys";
 import { bounded, deferred } from "./harness/barriers";
+import { fakeAuthState } from "./whatsapp-user-baileys-harness";
 
 test("pairing requests desktop full sync and reconnect keeps a compatible web payload", async () => {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-payload-"));
@@ -25,6 +27,8 @@ test("pairing requests desktop full sync and reconnect keeps a compatible web pa
     makeSocket(config) {
       captured.resolve(config);
       return {
+        ws: new EventEmitter(),
+        authState: fakeAuthState(config),
         ev: { on() {} },
         profilePictureUrl: async () => undefined,
         sendMessage: async () => undefined,

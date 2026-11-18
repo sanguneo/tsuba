@@ -155,7 +155,7 @@ test("queried groups arrive before the count even when groups.update is buffered
   ]);
 });
 
-test("edits and revokes become edit and delete events; other updates are ignored", async () => {
+test("edits and revokes retain their keys; incoming receipt updates are ignored", async () => {
   const { events, emit } = await setup();
   const key = { remoteJid: ROOM, id: "1" };
   emit("messages.update", [
@@ -167,7 +167,7 @@ test("edits and revokes become edit and delete events; other updates are ignored
       },
     },
     { key, update: { messageStubType: 1, message: null } },
-    { key, update: { status: 3 } },
+    { key: { ...key, fromMe: false }, update: { status: 3 } },
   ]);
   emit("messages.delete", { keys: [key] });
   emit("messages.delete", { jid: ROOM, all: true });
@@ -179,15 +179,95 @@ test("edits and revokes become edit and delete events; other updates are ignored
 });
 
 test("sendText sends plain text, quotes the held message, and returns the sent one", async () => {
-  const { wa, calls } = await setup();
+  const { wa, calls, ws, sent: relay } = await setup();
+  relay.on("send", (id: string) =>
+    ws.emit("CB:ack,class:message", { attrs: { id } }),
+  );
   const quoted = text("1", "q");
   const sent = await wa.sendText(ROOM, "hello", quoted);
-  expect(sent?.key.id).toBe("9000");
+  expect(sent?.key.id).toBeTruthy();
+  expect(sent?.status).toBe(2);
   await wa.sendText(ROOM, "again");
   expect(calls).toEqual([
-    { jid: ROOM, content: { text: "hello" }, options: { quoted } },
-    { jid: ROOM, content: { text: "again" }, options: undefined },
+    {
+      jid: ROOM,
+      content: { text: "hello" },
+      options: { quoted, messageId: sent?.key.id },
+    },
+    {
+      jid: ROOM,
+      content: { text: "again" },
+      options: { messageId: expect.any(String) },
+    },
   ]);
+});
+
+test("a local relay or unrelated ACK cannot succeed; a matching error ACK returns unknown without resending", async () => {
+  const { wa, ws, sent, calls } = await setup();
+  const relayed = deferred<string>();
+  sent.once("send", (id: string) => relayed.resolve(id));
+  const outcome = wa.sendText(ROOM, "synthetic").then(
+    () => "accepted",
+    (error: unknown) => error,
+  );
+  const id = await bounded(relayed.promise, "local relay");
+  ws.emit("CB:ack,class:message", { attrs: { id: "unrelated" } });
+  const pending = Symbol("pending");
+  expect(await Promise.race([outcome, Promise.resolve(pending)])).toBe(pending);
+  ws.emit("CB:ack,class:message", { attrs: { id, error: "synthetic" } });
+  expect(await bounded(outcome, "negative ACK outcome")).toMatchObject({
+    code: "INTERNAL",
+  });
+  expect(calls).toHaveLength(1);
+  expect(ws.listenerCount("CB:ack,class:message")).toBe(0);
+});
+
+test("disconnect after media relay without ACK leaves the outcome unknown", async () => {
+  const { wa, sent, calls, emit, ws } = await setup();
+  const relayed = deferred<void>();
+  sent.once("send", () => relayed.resolve());
+  const outcome = wa
+    .sendMedia(ROOM, {
+      name: "synthetic.png",
+      type: "image/png",
+      bytes: new Uint8Array([1, 2]),
+    })
+    .then(
+      () => "accepted",
+      (error: unknown) => error,
+    );
+  await bounded(relayed.promise, "local media relay");
+  emit("connection.update", { connection: "close" });
+  expect(await bounded(outcome, "disconnect outcome")).toMatchObject({
+    code: "INTERNAL",
+  });
+  expect(calls).toHaveLength(1);
+  expect(ws.listenerCount("CB:ack,class:message")).toBe(0);
+});
+
+test("the SDK can recover the exact retained outgoing message on recipient retry", async () => {
+  const { config } = await setup(undefined, undefined, (room, id) =>
+    room === ROOM && id === "out"
+      ? text(id, "synthetic outgoing", {
+          key: { remoteJid: room, id, fromMe: true },
+        })
+      : room === ROOM && id === "in"
+        ? text(id, "synthetic incoming")
+        : undefined,
+  );
+  const get = config().getMessage;
+  expect(
+    await get?.({ remoteJid: ROOM, id: "out", fromMe: true }),
+  ).toMatchObject({ conversation: "synthetic outgoing" });
+  expect(
+    await get?.({ remoteJid: GROUP, id: "out", fromMe: true }),
+  ).toBeUndefined();
+  expect(
+    await get?.({ remoteJid: ROOM, id: "in", fromMe: true }),
+  ).toBeUndefined();
+  expect(
+    await get?.({ remoteJid: ROOM, id: "out", fromMe: false }),
+  ).toBeUndefined();
 });
 
 test("credential updates are saved and close waits for them, then ends the socket", async () => {

@@ -10,6 +10,7 @@ import { CAPABILITIES } from "../adapters/whatsapp-user/src/capabilities";
 import { connectWhatsApp } from "../adapters/whatsapp-user/src/session";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { bounded, deferred } from "./harness/barriers";
+import { fakeAuthState } from "./whatsapp-user-baileys-harness";
 import { TARGET_LID } from "./whatsapp-user-send-harness";
 
 test("/send refuses a LID write before calling the SDK when own LID has not arrived", async () => {
@@ -22,9 +23,11 @@ test("/send refuses a LID write before calling the SDK when own LID has not arri
     open: () =>
       openBaileys({
         authDir,
-        makeSocket() {
+        makeSocket(config) {
           ready.resolve();
           return {
+            ws: events,
+            authState: fakeAuthState(config),
             ev: {
               on(event, handler) {
                 events.on(event, handler);

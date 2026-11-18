@@ -6,6 +6,19 @@ the same MAJOR and, while MAJOR is 0, the same MINOR. Inside a range changes are
 additive only; anything else opens a new range. The rules and every name in use
 or reserved are in [`docs/contract.md`](../docs/contract.md).
 
+## 0.2.9 — 2026-11-18
+
+Additive: optional `Message.deliveryStatus` (`sent`, `delivered`, `read`)
+reports confirmed outbound receipts. Absent means unknown or unsupported;
+`sent` requires server acknowledgement. Group delivery/read means any observed
+recipient, not everyone, and exposes no recipient identities. State advances
+monotonically. Receipt changes use the existing `message.edited` SSE event with
+the complete message by room/id, including history advancing a known message;
+the adapter declares that event in `messages.stream.events`. Unseen history
+is not streamed and `message` remains for new arrivals. Clients reread
+`/messages` after reconnecting because resume does not guarantee receipt replay.
+No new capability or event is introduced.
+
 ## 0.2.8 — 2026-11-16
 
 Additive: optional `Room.avatar` is an opaque `/media` id for the room picture.
