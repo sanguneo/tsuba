@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { AdapterError, type MediaFile, type Room } from "@tsuba/serve-kit";
+import {
+  AdapterError,
+  type MediaFile,
+  type Message,
+  type Room,
+} from "@tsuba/serve-kit";
 import {
   downloadPicture,
   type Picture,
@@ -37,20 +42,53 @@ export class RoomAvatars {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
-  async rooms(rooms: readonly Room[]): Promise<Room[]> {
+  rooms(
+    rooms: readonly Room[],
+    candidates: (id: string) => readonly string[] = (id) => [id],
+  ): Promise<Room[]> {
+    return this.decorate(
+      rooms,
+      (room) => candidates(room.id),
+      (room, avatar) => ({ ...room, avatar }),
+    );
+  }
+
+  messages(
+    messages: readonly Message[],
+    candidates: (id: string) => readonly string[],
+  ): Promise<Message[]> {
+    return this.decorate(
+      messages,
+      (message) =>
+        !message.fromMe && message.senderId
+          ? candidates(message.senderId).filter((jid) => !jid.endsWith("@g.us"))
+          : [],
+      (message, senderAvatar) => ({ ...message, senderAvatar }),
+    );
+  }
+
+  private async decorate<T extends object>(
+    items: readonly T[],
+    candidates: (item: T) => readonly string[],
+    withAvatar: (item: T, id: string) => T,
+  ): Promise<T[]> {
     const signal = AbortSignal.timeout(8_000);
-    const result: Room[] = [];
+    const result: T[] = [];
     let index = 0;
     await Promise.all(
       Array.from({ length: CONCURRENCY }, async () => {
         for (;;) {
           const at = index++;
-          const room = rooms[at];
-          if (!room) return;
-          const entry = await this.get(room.id, signal);
-          result[at] = entry?.picture
-            ? { ...room, avatar: entry.picture.id }
-            : room;
+          const item = items[at];
+          if (!item) return;
+          result[at] = item;
+          for (const jid of candidates(item)) {
+            const entry = await this.get(jid, signal);
+            if (entry?.picture) {
+              result[at] = withAvatar(item, entry.picture.id);
+              break;
+            }
+          }
         }
       }),
     );

@@ -76,11 +76,9 @@ export function whatsappUserBackend(
     (jid) => link.profilePictureUrl(jid),
     avatarOptions,
   );
+  const pictureJids = (jid: string) => store.pictureJids(jid);
   const listeners = new Set<(update: StreamUpdate) => void>();
-  const emit = (update: StreamUpdate) => {
-    for (const listener of listeners) listener(update);
-  };
-
+  let stream = Promise.resolve();
   link.subscribe((event) => {
     if (
       event.type !== "state" &&
@@ -89,7 +87,32 @@ export function whatsappUserBackend(
       event.type !== "groupSyncComplete" &&
       event.type !== "groupSyncFailed"
     ) {
-      for (const update of applyStoreEvent(store, event)) emit(update);
+      const updates = applyStoreEvent(store, event);
+      if (updates.length && listeners.size) {
+        const recipients = [...listeners];
+        // Resolve pictures in parallel with earlier updates without reordering edits or deletes.
+        const ready = Promise.all(
+          updates.map(async (update) => {
+            if (
+              (update.event === "message" ||
+                update.event === "message.edited") &&
+              link.state() === "open"
+            ) {
+              const [message] = await avatars.messages(
+                [update.message],
+                pictureJids,
+              );
+              if (message) return { ...update, message };
+            }
+            return update;
+          }),
+        );
+        stream = Promise.all([stream, ready]).then(([, ordered]) => {
+          for (const update of ordered)
+            for (const listener of recipients)
+              if (listeners.has(listener)) listener(update);
+        });
+      }
       changed();
     }
   });
@@ -129,7 +152,10 @@ export function whatsappUserBackend(
       requireLogin();
       const rooms = store.rooms();
       return {
-        rooms: link.state() === "open" ? await avatars.rooms(rooms) : rooms,
+        rooms:
+          link.state() === "open"
+            ? await avatars.rooms(rooms, pictureJids)
+            : rooms,
         complete: false,
       };
     },
@@ -145,12 +171,19 @@ export function whatsappUserBackend(
           "NOT_FOUND",
           "That message is not in this adapter's memory",
         );
-      return store.page(roomId, Math.min(limit, 100), before);
+      const page = store.page(roomId, Math.min(limit, 100), before);
+      return link.state() === "open"
+        ? {
+            ...page,
+            messages: await avatars.messages(page.messages, pictureJids),
+          }
+        : page;
     },
     subscribe(listener) {
-      listeners.add(listener);
+      const deliver = (update: StreamUpdate) => listener(update);
+      listeners.add(deliver);
       return () => {
-        listeners.delete(listener);
+        listeners.delete(deliver);
       };
     },
     async send(roomId, text, { replyTo }) {

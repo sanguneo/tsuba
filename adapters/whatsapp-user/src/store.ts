@@ -170,10 +170,9 @@ export class WaStore {
     if (roomId && isRoomJid(roomId) && !raw.key.fromMe) {
       const direct = personalJid(roomId);
       // These Baileys key fields describe the sender, not the recipient.
-      if (direct)
-        this.linkAliases([direct, raw.key.senderPn, raw.key.senderLid]);
       const sender = direct ?? personalJid(raw.key.participant ?? "");
       if (sender) {
+        this.linkAliases([sender, raw.key.senderPn, raw.key.senderLid]);
         this.setPushName(sender, raw.pushName, toSeconds(raw.messageTimestamp));
         if (raw.verifiedBizName?.trim())
           this.setNames([{ id: sender, verifiedName: raw.verifiedBizName }]);
@@ -189,7 +188,7 @@ export class WaStore {
       const oldest = this.sorted(roomId)[0];
       if (oldest?.raw.key.id) room.delete(oldest.raw.key.id);
     }
-    return mapped;
+    return this.withSenderName(mapped);
   }
 
   edit(key: WaKey, content: WaContent, at: number | null): Message | null {
@@ -197,7 +196,8 @@ export class WaStore {
     if (!entry || !shown(content)) return null;
     entry.raw = { ...entry.raw, message: content };
     entry.editedAt = at;
-    return mapMessage(entry.raw, at);
+    const mapped = mapMessage(entry.raw, at);
+    return mapped && this.withSenderName(mapped);
   }
 
   remove(keys: WaKey[]): { roomId: string; id: string }[] {
@@ -218,26 +218,9 @@ export class WaStore {
     const rooms = [...ids].map((id) => {
       const chat = this.chats.get(id) ?? {};
       const newest = this.page(id, 1).messages[0];
-      const personal = personalJid(id) ?? id;
-      let aliases = [...(this.aliases.get(personal) ?? [personal])];
-      const phones = aliases.filter(phoneJid);
-      if (phones.length > 1) aliases = [personal];
-      const contacts = aliases.flatMap((alias) => this.names.get(alias) ?? []);
-      const label = (value?: string | null) =>
-        value?.trim() &&
-        !aliases.some((alias) => value === alias || value === jidUser(alias));
-      const pushed = aliases
-        .flatMap((alias) => this.pushNames.get(alias) ?? [])
-        .sort((left, right) => right.at - left.at)[0]?.name;
       const name = id.endsWith("@g.us")
         ? this.subjects.get(id) || chat.name
-        : contacts.find((contact) => label(contact.name))?.name ||
-          (label(chat.name) ? chat.name : undefined) ||
-          (label(pushed) ? pushed : undefined) ||
-          contacts.find((contact) => label(contact.notify))?.notify ||
-          contacts.find((contact) => label(contact.verifiedName))
-            ?.verifiedName ||
-          (phones.length === 1 && phones[0] ? jidUser(phones[0]) : undefined);
+        : this.personalName(id, chat.name);
       return mapRoom(id, { ...chat, name: name ?? null }, newest);
     });
     rooms.sort(
@@ -263,15 +246,62 @@ export class WaStore {
     if (end < 0) return { messages: [], hasEarlier: false };
     const start = Math.max(0, end - limit);
     return {
-      messages: all
-        .slice(start, end)
-        .flatMap((entry) => mapMessage(entry.raw, entry.editedAt) ?? []),
+      messages: all.slice(start, end).flatMap((entry) => {
+        const mapped = mapMessage(entry.raw, entry.editedAt);
+        return mapped ? [this.withSenderName(mapped)] : [];
+      }),
       hasEarlier: start > 0,
     };
   }
 
   has(roomId: string, id: string): boolean {
     return this.messages.get(roomId)?.has(id) ?? false;
+  }
+
+  /** Try the observed address first; only use a uniquely linked phone as fallback. */
+  pictureJids(jid: string): string[] {
+    if (!isRoomJid(jid)) return [];
+    const id = personalJid(jid) ?? jid;
+    const phones = [...(this.aliases.get(id) ?? [])].filter(phoneJid);
+    const phone = phones.length === 1 ? phones[0] : undefined;
+    return phone && phone !== id ? [id, phone] : [id];
+  }
+
+  private personalName(
+    jid: string,
+    chatName?: string | null,
+  ): string | undefined {
+    const id = personalJid(jid);
+    if (!id) return undefined;
+    const linked = [...(this.aliases.get(id) ?? [id])];
+    const phones = linked.filter(phoneJid);
+    const phone = phones.length === 1 ? phones[0] : undefined;
+    const aliases = phones.length > 1 ? [id] : linked;
+    const contacts = aliases.flatMap((alias) => this.names.get(alias) ?? []);
+    const label = (value?: string | null) =>
+      value?.trim() &&
+      !aliases.some((alias) => value === alias || value === jidUser(alias));
+    const pushed = aliases
+      .flatMap((alias) => this.pushNames.get(alias) ?? [])
+      .filter(({ name }) => label(name))
+      .sort((left, right) => right.at - left.at)[0]?.name;
+    return (
+      contacts.find((contact) => label(contact.name))?.name ||
+      (label(chatName) ? chatName : undefined) ||
+      pushed ||
+      contacts.find((contact) => label(contact.notify))?.notify ||
+      contacts.find((contact) => label(contact.verifiedName))?.verifiedName ||
+      (phone ? jidUser(phone) : undefined)
+    );
+  }
+
+  private withSenderName(message: Message): Message {
+    if (!message.senderId) return message;
+    const chat = personalJid(message.roomId)
+      ? this.chats.get(message.roomId)
+      : undefined;
+    const sender = this.personalName(message.senderId, chat?.name);
+    return sender ? { ...message, sender } : message;
   }
 
   private linkAliases(values: (string | null | undefined)[]): void {
