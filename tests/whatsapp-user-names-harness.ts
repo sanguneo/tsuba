@@ -42,6 +42,9 @@ export async function setupNames(store = new WaStore()) {
             profilePictureUrl: async () => undefined,
             ev,
             sendMessage: async () => undefined,
+            updateMediaMessage: async () => {
+              throw new Error("Unexpected media refresh");
+            },
             groupFetchAllParticipating() {
               fetched.resolve();
               // Baileys 6.7.24 emits groups.update before resolving this call.

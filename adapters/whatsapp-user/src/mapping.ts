@@ -1,4 +1,4 @@
-import type { Message, Room } from "@tsuba/serve-kit";
+import type { Attachment, Message, Room } from "@tsuba/serve-kit";
 import type {
   WaChat,
   WaContent,
@@ -13,18 +13,37 @@ const ROOM_JID = /^[0-9A-Za-z._-]+(?::[0-9]+)?@(?:s\.whatsapp\.net|lid|g\.us)$/;
 const PREVIEW_CODEPOINTS = 200;
 const WRAPPERS = [
   "ephemeralMessage",
-  "viewOnceMessage",
-  "viewOnceMessageV2",
   "documentWithCaptionMessage",
   "editedMessage",
 ] as const;
-const MEDIA = [
+const MEDIA = {
+  imageMessage: "image",
+  videoMessage: "video",
+  documentMessage: "file",
+  audioMessage: "audio",
+  stickerMessage: "sticker",
+} as const;
+const MEDIA_TYPES = [
   "imageMessage",
   "videoMessage",
   "documentMessage",
   "audioMessage",
   "stickerMessage",
 ] as const;
+export const MESSAGE_MEDIA_PREFIX = "message:";
+
+export function mediaLocation(
+  id: string,
+): { roomId: string; messageId: string } | null {
+  const encoded = id.slice(MESSAGE_MEDIA_PREFIX.length);
+  if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return null;
+  const [roomId, messageId, ...extra] = Buffer.from(encoded, "base64url")
+    .toString("utf8")
+    .split("\0");
+  return roomId && isRoomJid(roomId) && messageId && !extra.length
+    ? { roomId, messageId }
+    : null;
+}
 
 export function isRoomJid(jid: string): boolean {
   return ROOM_JID.test(jid);
@@ -50,19 +69,37 @@ export function unwrap(
 ): WaContent | null {
   let current = content ?? null;
   for (let depth = 0; current && depth < 4; depth++) {
+    // The adapter cannot honor WhatsApp's one-time display semantics.
+    if (
+      current.viewOnceMessage ||
+      current.viewOnceMessageV2 ||
+      current.viewOnceMessageV2Extension
+    )
+      return null;
     const wrapper: WaWrapper | null | undefined = WRAPPERS.map(
       (name) => current?.[name],
     ).find((value) => value?.message);
     if (!wrapper?.message) return current;
     current = wrapper.message;
   }
-  return current;
+  return null;
 }
 
 interface Shown {
   text: string;
   kind: "text" | "media";
   replyTo?: string;
+  attachment?: Omit<Attachment, "id">;
+}
+
+export function messageAttachment(
+  raw: WaMessageLike,
+  attachment = shown(raw.message)?.attachment,
+): Attachment | undefined {
+  const { remoteJid, id } = raw.key;
+  if (!attachment || !remoteJid || !id) return undefined;
+  const location = Buffer.from(`${remoteJid}\0${id}`).toString("base64url");
+  return { ...attachment, id: `${MESSAGE_MEDIA_PREFIX}${location}` };
 }
 
 /** Text and media are shown; reactions, protocol and unknown content are not. */
@@ -80,16 +117,43 @@ export function shown(content: WaContent | null | undefined): Shown | null {
         ? { replyTo: extended.contextInfo.stanzaId }
         : {}),
     };
-  for (const name of MEDIA) {
+  for (const name of MEDIA_TYPES) {
     const media = inner[name];
-    if (media)
+    if (media && !media.viewOnce) {
+      const size = toSeconds(media.fileLength);
+      const kind = media.ptt
+        ? "voice"
+        : media.gifPlayback
+          ? "animation"
+          : MEDIA[name];
+      const mimeType = media.mimetype?.split(";")[0]?.trim().toLowerCase();
       return {
         text: media.caption ?? "",
         kind: "media",
         ...(media.contextInfo?.stanzaId
           ? { replyTo: media.contextInfo.stanzaId }
           : {}),
+        ...(media.mediaKey?.length && (media.url || media.directPath)
+          ? {
+              attachment: {
+                kind,
+                ...(mimeType ? { mimeType } : {}),
+                ...(media.fileName ? { name: media.fileName } : {}),
+                ...(size && Number.isSafeInteger(size) ? { size } : {}),
+                ...(media.width && media.width > 0
+                  ? { width: media.width }
+                  : {}),
+                ...(media.height && media.height > 0
+                  ? { height: media.height }
+                  : {}),
+                ...(media.seconds && media.seconds > 0
+                  ? { durationSeconds: media.seconds }
+                  : {}),
+              },
+            }
+          : {}),
       };
+    }
   }
   return null;
 }
@@ -106,6 +170,8 @@ export function mapMessage(
     return null;
   const fromMe = raw.key.fromMe === true;
   const author = raw.key.participant ?? roomId;
+  const attachment =
+    content.attachment && messageAttachment(raw, content.attachment);
   return {
     id,
     roomId,
@@ -116,6 +182,7 @@ export function mapMessage(
     sentAt: iso(seconds),
     ...(editedAt ? { editedAt: iso(editedAt) } : {}),
     fromMe,
+    ...(attachment ? { attachments: [attachment] } : {}),
     ...(content.replyTo ? { replyTo: content.replyTo } : {}),
   };
 }

@@ -4,11 +4,13 @@ import { AdapterError } from "@tsuba/serve-kit";
 import makeWASocket, {
   type BaileysEventMap,
   Browsers,
+  downloadMediaMessage,
   proto,
   useMultiFileAuthState,
   type WAMessage,
   WAMessageStubType,
 } from "@whiskeysockets/baileys";
+import { unwrap } from "./mapping";
 import type { WaContact, WaGroup, WaSocket, WaSocketEvent } from "./types";
 
 export type BaileysEvents = BaileysEventMap;
@@ -24,6 +26,7 @@ export interface BaileysLike {
     ): void;
   };
   sendMessage: ReturnType<typeof makeWASocket>["sendMessage"];
+  updateMediaMessage: ReturnType<typeof makeWASocket>["updateMediaMessage"];
   groupFetchAllParticipating: ReturnType<
     typeof makeWASocket
   >["groupFetchAllParticipating"];
@@ -64,6 +67,48 @@ function statusCode(error: unknown): number | undefined {
   return typeof code === "number" ? code : undefined;
 }
 
+function httpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object" || !("response" in error))
+    return statusCode(error);
+  const { response } = error;
+  return response &&
+    typeof response === "object" &&
+    "status" in response &&
+    typeof response.status === "number"
+    ? response.status
+    : statusCode(error);
+}
+
+function validMediaLocation(message: WAMessage): boolean {
+  const content = message.message;
+  const media =
+    content?.imageMessage ??
+    content?.videoMessage ??
+    content?.documentMessage ??
+    content?.audioMessage ??
+    content?.stickerMessage;
+  // The SDK concatenates directPath onto its CDN origin. Require a rooted
+  // path and disallow HTTP redirects on the download.
+  return Boolean(
+    media?.url?.startsWith("https://mmg.whatsapp.net/") ||
+      media?.directPath?.startsWith("/"),
+  );
+}
+
+async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([work, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 /**
  * Opens one WhatsApp Web connection on the saved session and reports it as
  * `WaSocketEvent`s. Nothing here logs: the library's logger is silenced because
@@ -76,6 +121,9 @@ export function openBaileys({
   let handler: (event: WaSocketEvent) => void = () => {};
   let saving: Promise<void> = Promise.resolve();
   const emit = (event: WaSocketEvent) => handler(event);
+  // SDK re-upload has no abort argument. Share its pending request and retain
+  // the refreshed URL for this raw message until the store replaces/evicts it.
+  const refreshed = new WeakMap<object, Promise<WAMessage>>();
 
   const ready = (async () => {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -181,6 +229,16 @@ export function openBaileys({
   })();
   ready.catch(() => emit({ type: "close", statusCode: undefined }));
 
+  const send: BaileysLike["sendMessage"] = async (jid, content, options) => {
+    const { socket, creds } = await ready;
+    if (jid.endsWith("@lid") && !creds.me?.lid)
+      throw new AdapterError(
+        "BUSY",
+        "WhatsApp has not supplied this device's LID yet; nothing was sent",
+      );
+    return socket.sendMessage(jid, content, options);
+  };
+
   return {
     async profilePictureUrl(jid) {
       const { socket } = await ready;
@@ -190,19 +248,133 @@ export function openBaileys({
     onEvent(next) {
       handler = next;
     },
-    async sendText(jid, text, quoted) {
-      const { socket, creds } = await ready;
-      if (jid.endsWith("@lid") && !creds.me?.lid)
-        throw new AdapterError(
-          "BUSY",
-          "WhatsApp has not supplied this device's LID yet; nothing was sent",
-        );
-      return socket.sendMessage(
-        jid,
-        { text },
-        // The store only holds messages that Baileys itself delivered.
-        quoted ? { quoted: quoted as WAMessage } : undefined,
+    sendText(jid, text, quoted) {
+      return send(jid, { text }, quoted && { quoted: quoted as WAMessage });
+    },
+    sendMedia(jid, file, caption, quoted) {
+      const bytes = Buffer.from(
+        file.bytes.buffer,
+        file.bytes.byteOffset,
+        file.bytes.byteLength,
       );
+      const mimetype =
+        file.type.split(";")[0]?.trim().toLowerCase() ||
+        "application/octet-stream";
+      const metadata = {
+        mimetype,
+        ...(caption === undefined ? {} : { caption }),
+      };
+      // Inline only common formats. Keep larger pictures as original documents
+      // instead of assuming the recipient's client can display them inline.
+      const content =
+        bytes.length <= 16_000_000 &&
+        /^(image\/jpeg|image\/png)$/.test(mimetype)
+          ? { ...metadata, image: bytes }
+          : mimetype === "video/mp4"
+            ? { ...metadata, video: bytes }
+            : { ...metadata, document: bytes, fileName: file.name };
+      return send(jid, content, quoted && { quoted: quoted as WAMessage });
+    },
+    async downloadMedia(raw, signal) {
+      const { socket } = await ready;
+      const inner = unwrap(raw.message);
+      if (!inner)
+        throw new AdapterError("NOT_FOUND", "No such WhatsApp attachment");
+      const message: WAMessage = {
+        key: raw.key,
+        message: proto.Message.fromObject(inner),
+      };
+      if (!validMediaLocation(message))
+        throw new AdapterError("NOT_FOUND", "No valid WhatsApp media location");
+      const transfer = new AbortController();
+      const downloadSignal = AbortSignal.any([
+        signal,
+        transfer.signal,
+        AbortSignal.timeout(120_000),
+      ]);
+      try {
+        const prior = refreshed.get(raw);
+        const stream = await downloadMediaMessage(
+          prior ? await abortable(prior, downloadSignal) : message,
+          "stream",
+          {
+            options: {
+              signal: downloadSignal,
+              timeout: 8_000,
+              maxRedirects: 0,
+            },
+          },
+          {
+            logger: SILENT_LOGGER,
+            reuploadRequest: (expired) => {
+              downloadSignal.throwIfAborted();
+              const cached = refreshed.get(raw);
+              if (cached && cached !== prior)
+                return abortable(cached, downloadSignal);
+              const pending = socket
+                .updateMediaMessage(expired)
+                .then((updated) => {
+                  if (!validMediaLocation(updated))
+                    throw new AdapterError(
+                      "NOT_FOUND",
+                      "No valid WhatsApp media location",
+                    );
+                  return updated;
+                })
+                .catch((error: unknown) => {
+                  refreshed.delete(raw);
+                  throw error;
+                });
+              refreshed.set(raw, pending);
+              return abortable(pending, downloadSignal);
+            },
+          },
+        );
+        const chunks = stream[Symbol.asyncIterator]();
+        return new ReadableStream<Uint8Array>(
+          {
+            async pull(controller) {
+              try {
+                const { value, done } = await abortable(
+                  chunks.next(),
+                  downloadSignal,
+                );
+                if (done) controller.close();
+                else if (value instanceof Uint8Array) controller.enqueue(value);
+                else
+                  controller.error(new Error("Invalid WhatsApp media chunk"));
+              } catch {
+                stream.destroy();
+                controller.error(
+                  new Error("WhatsApp media stream interrupted"),
+                );
+              }
+            },
+            cancel() {
+              // Abort Axios itself; destroying the Transform alone can leave
+              // its underlying HTTP connection open.
+              transfer.abort();
+              stream.destroy();
+            },
+          },
+          { highWaterMark: 0 },
+        );
+      } catch (error) {
+        if (error instanceof AdapterError) throw error;
+        switch (httpStatus(error)) {
+          case 404:
+          case 410:
+            throw new AdapterError(
+              "NOT_FOUND",
+              "The WhatsApp attachment is no longer available",
+            );
+          default:
+            throw new AdapterError(
+              "INTERNAL",
+              "WhatsApp media download failed",
+            );
+        }
+      }
     },
     async close() {
       handler = () => {};

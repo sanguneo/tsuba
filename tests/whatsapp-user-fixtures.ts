@@ -37,6 +37,12 @@ export function fakeLink(initial: WaState = "open") {
     sendImpl: (jid: string, text: string) => Promise<WaMessageLike | undefined>;
   } = {
     profilePictureUrl: async () => undefined,
+    sendMedia: async () => {
+      throw new Error("Unexpected upload");
+    },
+    downloadMedia: async () => {
+      throw new Error("Unexpected download");
+    },
     sends,
     sendImpl: async (jid) => text("9000", "sent", { key: sentKey(jid) }),
     state: () => state,
@@ -82,6 +88,12 @@ export function socketFactory() {
         },
         async sendText() {
           return undefined;
+        },
+        async sendMedia() {
+          throw new Error("Unexpected upload");
+        },
+        async downloadMedia() {
+          throw new Error("Unexpected download");
         },
         async close() {
           socket.closed = true;
