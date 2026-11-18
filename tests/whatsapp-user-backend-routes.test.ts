@@ -7,6 +7,7 @@ import {
   type RoomsAnswer,
   type StreamUpdate,
 } from "../packages/serve-kit/src/index";
+import { bounded, deferred } from "./harness/barriers";
 import { fakeLink, GROUP, ROOM, SECONDS, text } from "./whatsapp-user-fixtures";
 
 const headers = {
@@ -92,23 +93,34 @@ test("messages page backwards from a held id, refuse an unknown cursor and bad r
   );
 });
 
-test("a live message streams once; history, duplicates and own-send echoes do not", () => {
+test("a live message streams once; history, duplicates and own-send echoes do not", async () => {
   const { backend, link } = setup();
   const updates: StreamUpdate[] = [];
-  const stop = present(backend.subscribe)((update) => updates.push(update));
+  const caughtUp = deferred<void>();
+  const stop = present(backend.subscribe)((update) => {
+    updates.push(update);
+    if (update.event === "message" && update.message.id === "3")
+      caughtUp.resolve();
+  });
   link.push({ type: "messages", messages: [text("1", "old")], live: false });
   link.push({ type: "messages", messages: [text("2", "new")], live: true });
   link.push({ type: "messages", messages: [text("2", "new")], live: true });
-  expect(updates.map((update) => update.event)).toEqual(["message"]);
-  stop();
   link.push({ type: "messages", messages: [text("3", "x")], live: true });
-  expect(updates).toHaveLength(1);
+  await bounded(caughtUp.promise, "stream reached the next unique message");
+  expect(
+    updates.map((update) => update.event === "message" && update.message.id),
+  ).toEqual(["2", "3"]);
+  stop();
 });
 
-test("edits and deletes of held messages stream; unknown ones are silent", () => {
+test("edits and deletes of held messages stream; unknown ones are silent", async () => {
   const { backend, link } = setup();
   const updates: StreamUpdate[] = [];
-  present(backend.subscribe)((update) => updates.push(update));
+  const deleted = deferred<void>();
+  const stop = present(backend.subscribe)((update) => {
+    updates.push(update);
+    if (update.event === "message.deleted") deleted.resolve();
+  });
   link.push({
     type: "messages",
     messages: [text("1", "a"), text("2", "b")],
@@ -131,6 +143,8 @@ test("edits and deletes of held messages stream; unknown ones are silent", () =>
     type: "delete",
     keys: [key, { remoteJid: ROOM, id: "2" }, { remoteJid: ROOM, id: "404" }],
   });
+  await bounded(deleted.promise, "stream reached the deletion");
+  stop();
   expect(updates).toEqual([
     {
       event: "message.edited",

@@ -24,6 +24,43 @@ test("an incoming LID message uses its mapped phone until a contact name arrives
   expect(await rooms()).toEqual({ [LID]: "Saved contact" });
 });
 
+test("retained direct messages pick up the same contact name as the room", () => {
+  const store = new WaStore();
+  store.put({
+    key: { remoteJid: LID, id: "1", senderPn: ROOM },
+    message: { conversation: "synthetic" },
+    messageTimestamp: SECONDS,
+  });
+  store.setNames([{ id: ROOM, verifiedName: "Synthetic business" }]);
+  expect(store.page(LID, 10).messages[0]).toMatchObject({
+    sender: "Synthetic business",
+    senderId: LID,
+  });
+});
+
+test("group messages resolve the participant without borrowing the group title", () => {
+  const store = new WaStore();
+  store.setGroups([{ id: GROUP, subject: "Synthetic group" }]);
+  store.setNames([{ id: ROOM, lid: LID, name: "Synthetic participant" }]);
+  const key = { remoteJid: GROUP, participant: LID, id: "1" };
+  const message = store.put({
+    key,
+    message: { conversation: "synthetic" },
+    messageTimestamp: SECONDS,
+    pushName: "Synthetic push",
+  });
+  expect(message).toMatchObject({
+    sender: "Synthetic participant",
+    senderId: LID,
+  });
+  expect(
+    store.edit(key, { conversation: "edited" }, SECONDS + 1),
+  ).toMatchObject({
+    sender: "Synthetic participant",
+    text: "edited",
+  });
+});
+
 test("an unsupported incoming message contributes a push name without creating a room", async () => {
   const { ev, rooms } = await setupNames();
   ev.emit("messages.upsert", {

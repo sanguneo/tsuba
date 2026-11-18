@@ -2,18 +2,25 @@ import { expect, onTestFinished, test } from "bun:test";
 import type { PictureFetch } from "../adapters/whatsapp-user/src/avatar-download";
 import { whatsappUserBackend } from "../adapters/whatsapp-user/src/backend";
 import { CAPABILITIES } from "../adapters/whatsapp-user/src/capabilities";
-import { createHandler } from "../packages/serve-kit/src/index";
+import {
+  createHandler,
+  type MessagesAnswer,
+} from "../packages/serve-kit/src/index";
 import { schema } from "./fixtures";
 import { bounded, deferred } from "./harness/barriers";
-import { fakeLink, GROUP, ROOM } from "./whatsapp-user-fixtures";
+import { fakeLink, GROUP, ROOM, text } from "./whatsapp-user-fixtures";
+
+const LID = "100000000003@lid";
 
 const headers = { authorization: "Bearer synthetic-avatar-token" };
 const jpeg = new Uint8Array([255, 216, 255, 217]);
 
-function setup() {
+function setup(
+  profilePictureUrl: (jid: string) => Promise<string | undefined> = async () =>
+    "https://pps.whatsapp.net/synthetic.jpg",
+) {
   const link = Object.assign(fakeLink(), {
-    profilePictureUrl: async (): Promise<string | undefined> =>
-      "https://pps.whatsapp.net/synthetic.jpg",
+    profilePictureUrl,
   });
   let bytes = jpeg;
   const server = Bun.serve({
@@ -56,7 +63,7 @@ function setup() {
   };
 }
 
-test("listed direct and group rooms expose opaque picture IDs without sender avatars", async () => {
+test("listed direct and group rooms expose opaque picture IDs", async () => {
   const { handle } = setup();
   const response = await handle(
     new Request("http://adapter/rooms", { headers }),
@@ -71,13 +78,75 @@ test("listed direct and group rooms expose opaque picture IDs without sender ava
     ],
   });
   expect(JSON.stringify(answer)).not.toContain("https:");
-  expect(CAPABILITIES.features["avatars.read"]).toBeUndefined();
+});
+
+test("a LID room and its incoming messages share the mapped phone picture", async () => {
+  const app = setup(async (jid) =>
+    jid === ROOM ? "https://pps.whatsapp.net/synthetic.jpg" : undefined,
+  );
+  app.link.push({
+    type: "messages",
+    live: false,
+    messages: [
+      {
+        ...text("1", "synthetic"),
+        key: { remoteJid: LID, id: "1", senderPn: ROOM },
+      },
+      {
+        ...text("2", "synthetic"),
+        key: { remoteJid: LID, id: "2", fromMe: true },
+      },
+    ],
+  });
+  const response = await app.request(
+    `/messages?roomId=${encodeURIComponent(LID)}`,
+  );
+  expect(response.status).toBe(200);
+  const answer = await response.json();
+  expect(schema("MessagesAnswer")(answer)).toBe(true);
+  const { messages } = answer as MessagesAnswer;
+  const avatar = messages[0]?.senderAvatar;
+  expect(avatar).toMatch(/^wa-room-v1-[a-f0-9]{64}$/);
+  expect(messages[1]).not.toHaveProperty("senderAvatar");
+  expect((await app.rooms()).find((room) => room.id === LID)?.avatar).toBe(
+    avatar,
+  );
+  expect((await app.request(`/media?id=${avatar}`)).status).toBe(200);
+});
+
+test("a live group message uses its participant picture, never the room picture", async () => {
+  const app = setup(async (jid) =>
+    jid === ROOM ? "https://pps.whatsapp.net/synthetic.jpg" : undefined,
+  );
+  const subscribe = app.backend.subscribe;
+  if (!subscribe) throw new Error("Missing stream subscription");
+  const avatar = deferred<string | undefined>();
+  onTestFinished(
+    subscribe((update) => {
+      if (update.event === "message")
+        avatar.resolve(update.message.senderAvatar);
+    }),
+  );
+  app.link.push({
+    type: "messages",
+    live: true,
+    messages: [
+      {
+        ...text("1", "synthetic"),
+        key: { remoteJid: GROUP, id: "1", participant: LID, senderPn: ROOM },
+      },
+    ],
+  });
+  const id = await bounded(avatar.promise, "live participant picture");
+  expect(id).toMatch(/^wa-room-v1-[a-f0-9]{64}$/);
+  expect((await app.request(`/media?id=${id}`)).status).toBe(200);
 });
 
 test("the declaration is exactly what the backend performs", async () => {
   const { request, handle } = setup();
   expect(Object.keys(CAPABILITIES.features).sort()).toEqual([
     "attachments.read",
+    "avatars.read",
     "messages.read",
     "messages.reply",
     "messages.send",
