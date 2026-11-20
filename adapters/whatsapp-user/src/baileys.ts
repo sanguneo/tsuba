@@ -3,38 +3,30 @@ import { join } from "node:path";
 import { AdapterError } from "@tsuba/serve-kit";
 import makeWASocket, {
   type BaileysEventMap,
+  type BinaryNode,
   Browsers,
   downloadMediaMessage,
   generateMessageIDV2,
   proto,
   useMultiFileAuthState,
   type WAMessage,
-  WAMessageStubType,
 } from "@whiskeysockets/baileys";
-import { unwrap } from "./mapping";
-import type {
-  WaContact,
-  WaGroup,
-  WaMessageLike,
-  WaSocket,
-  WaSocketEvent,
-} from "./types";
+import { bindDataEvents } from "./baileys-events";
+import { isBotJid, unwrap } from "./mapping";
+import type { WaMessageLike, WaSocket, WaSocketEvent } from "./types";
 
 export type BaileysEvents = BaileysEventMap;
-type SocketConfig = Parameters<typeof makeWASocket>[0];
+type SocketConfig = Parameters<typeof makeWASocket>[0] & {
+  readonly onBotReceiveDiagnostic: (reason: unknown) => void;
+  readonly onBotCiphertextRoom: (remoteJid: string) => void;
+};
 
 /** The part of a Baileys socket this adapter uses; a test can stand in for it. */
 export interface BaileysLike {
   authState: Pick<ReturnType<typeof makeWASocket>["authState"], "keys">;
   ws: {
-    on(
-      event: string,
-      listener: (node: { attrs: Record<string, string> }) => void,
-    ): void;
-    off(
-      event: string,
-      listener: (node: { attrs: Record<string, string> }) => void,
-    ): void;
+    on(event: string, listener: (node: BinaryNode) => void): void;
+    off(event: string, listener: (node: BinaryNode) => void): void;
   };
   profilePictureUrl: ReturnType<typeof makeWASocket>["profilePictureUrl"];
   ev: {
@@ -173,7 +165,22 @@ export function openBaileys({
           throw new Error("WhatsApp Signal key save failed");
         }),
       );
-    const socket = makeSocket({
+    const config: SocketConfig = {
+      onBotCiphertextRoom(remoteJid) {
+        if (isBotJid(remoteJid))
+          emit({ type: "chats", chats: [{ id: remoteJid }] });
+      },
+      onBotReceiveDiagnostic(reason) {
+        if (
+          reason === "missing-secret" ||
+          reason === "authentication-failed" ||
+          reason === "unsupported-envelope" ||
+          reason === "invalid-target" ||
+          reason === "invalid-payload" ||
+          reason === "lookup-failed"
+        )
+          emit({ type: "botDiagnostic", reason });
+      },
       auth: state,
       logger: SILENT_LOGGER,
       markOnlineOnConnect: false,
@@ -182,16 +189,20 @@ export function openBaileys({
       browser: Browsers.ubuntu("Desktop"),
       syncFullHistory: true,
       generateHighQualityLinkPreview: false,
-      // Only answer a WhatsApp retry for the exact retained outgoing message.
+      // Bot decryption and ordinary retries may only access an exact outbound key.
       // Do not retry a send that timed out at the adapter's HTTP boundary.
       async getMessage({ remoteJid, id, fromMe }) {
-        if (!fromMe || !remoteJid || !id) return undefined;
+        if (fromMe !== true || !remoteJid || !id) return undefined;
         const raw = findMessage?.(remoteJid, id);
-        return raw?.key.fromMe && raw.message
+        return raw?.key.fromMe === true &&
+          raw.key.remoteJid === remoteJid &&
+          raw.key.id === id &&
+          raw.message
           ? proto.Message.fromObject(raw.message)
           : undefined;
       },
-    });
+    };
+    const socket = makeSocket(config);
     // The SDK buffers key changes inside Signal transactions. Waiting only for
     // writes that have reached set() can miss a transaction still decrypting.
     const keys = socket.authState.keys;
@@ -232,85 +243,8 @@ export function openBaileys({
         });
       }
     });
-    socket.ev.on("messaging-history.set", (history) => {
-      emit({ type: "chats", chats: history.chats });
-      emit({ type: "names", names: contactNames(history.contacts) });
-      emit({ type: "messages", messages: history.messages, live: false });
-      // isLatest marks the first processed history, not the final chunk.
-      if (
-        history.syncType === proto.HistorySync.HistorySyncType.FULL &&
-        history.progress === 100
-      )
-        emit({ type: "historySyncComplete" });
-    });
-    socket.ev.on("chats.upsert", (chats) => emit({ type: "chats", chats }));
-    socket.ev.on("chats.update", (updates) =>
-      emit({
-        type: "chats",
-        chats: updates.flatMap(({ id, ...rest }) =>
-          id ? [{ id, ...rest }] : [],
-        ),
-      }),
-    );
-    socket.ev.on("chats.delete", (ids) => emit({ type: "chatsDeleted", ids }));
-    socket.ev.on("contacts.upsert", (contacts) =>
-      emit({ type: "names", names: contactNames(contacts) }),
-    );
-    socket.ev.on("contacts.update", (contacts) =>
-      emit({ type: "names", names: contactNames(contacts) }),
-    );
-    socket.ev.on("chats.phoneNumberShare", ({ lid, jid }) =>
-      emit({ type: "names", names: [{ id: lid, jid }] }),
-    );
-    const groups = (updates: Partial<WaGroup>[]) =>
-      emit({
-        type: "groups",
-        groups: updates.flatMap(({ id, ...rest }) =>
-          id ? [{ id, ...rest }] : [],
-        ),
-      });
-    socket.ev.on("groups.upsert", groups);
-    socket.ev.on("groups.update", groups);
-    socket.ev.on("messages.upsert", ({ messages, type }) =>
-      emit({ type: "messages", messages, live: type === "notify" }),
-    );
-    socket.ev.on("messages.update", (updates) => {
-      for (const { key, update } of updates) {
-        if (
-          key.fromMe !== false &&
-          (update.status != null || update.userReceipt?.length)
-        )
-          emit({
-            type: "receipt",
-            key,
-            update: {
-              ...(update.status != null ? { status: update.status } : {}),
-              ...(update.userReceipt
-                ? { userReceipt: update.userReceipt }
-                : {}),
-            },
-          });
-        const edited = update.message?.editedMessage?.message;
-        if (edited)
-          emit({
-            type: "edit",
-            key,
-            content: edited,
-            at: update.messageTimestamp,
-          });
-        else if (update.messageStubType === WAMessageStubType.REVOKE)
-          emit({ type: "delete", keys: [key] });
-      }
-    });
-    socket.ev.on("message-receipt.update", (updates) => {
-      for (const { key, receipt } of updates)
-        if (key.fromMe !== false)
-          emit({ type: "receipt", key, update: { userReceipt: [receipt] } });
-    });
-    socket.ev.on("messages.delete", (deletion) => {
-      if ("keys" in deletion) emit({ type: "delete", keys: deletion.keys });
-    });
-    return { socket, creds: state.creds };
+    const unbind = bindDataEvents(socket, () => state.creds.me, emit);
+    return { socket, creds: state.creds, unbind };
   })();
   ready.catch(() => emit({ type: "close", statusCode: undefined }));
 
@@ -511,6 +445,7 @@ export function openBaileys({
         handler = () => {};
         disconnected.abort();
         const held = await ready.catch(() => undefined);
+        held?.unbind();
         held?.socket.end(undefined);
         while (pendingAuth.size) await Promise.allSettled(pendingAuth);
         if (authWriteFailed) throw new Error("WhatsApp auth state save failed");
@@ -518,8 +453,4 @@ export function openBaileys({
       return close;
     },
   };
-}
-
-function contactNames(contacts: Partial<WaContact>[]): WaContact[] {
-  return contacts.flatMap(({ id, ...rest }) => (id ? [{ id, ...rest }] : []));
 }

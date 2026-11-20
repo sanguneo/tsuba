@@ -23,6 +23,7 @@ export function applyStoreEvent(
     case "groupSyncFailed":
     case "groupSyncStarted":
     case "groupSyncComplete":
+    case "botDiagnostic":
       return [];
     case "chatsDeleted":
       store.deleteChats(event.ids);

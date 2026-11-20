@@ -5,6 +5,7 @@ import {
   type StreamUpdate,
 } from "@tsuba/serve-kit";
 import {
+  isBotJid,
   isRoomJid,
   MESSAGE_MEDIA_PREFIX,
   mediaLocation,
@@ -92,7 +93,8 @@ export function whatsappUserBackend(
       event.type !== "historySyncComplete" &&
       event.type !== "groupSyncStarted" &&
       event.type !== "groupSyncComplete" &&
-      event.type !== "groupSyncFailed"
+      event.type !== "groupSyncFailed" &&
+      event.type !== "botDiagnostic"
     ) {
       const updates = applyStoreEvent(store, event);
       if (updates.length && listeners.size) {
@@ -154,6 +156,11 @@ export function whatsappUserBackend(
     submit: (quoted?: WaMessageLike) => Promise<WaMessageLike | undefined>,
   ): Promise<Message> {
     roomJid(roomId);
+    if (isBotJid(roomId))
+      throw new AdapterError(
+        "NOT_SUPPORTED",
+        "WhatsApp bot chats are read-only",
+      );
     requireOpen();
     const quoted =
       replyTo === undefined ? undefined : store.find(roomId, replyTo);

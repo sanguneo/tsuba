@@ -20,6 +20,11 @@ export interface StoreSnapshot {
   readonly subjects: { id: string; subject: string }[];
   readonly messages: { data: string; editedAt: number | null }[];
   readonly receipts?: { key: WaKey; status: number }[];
+  readonly botPrompts?: readonly {
+    readonly roomId: string;
+    readonly id: string;
+    readonly data: string;
+  }[];
 }
 
 export class StoreFileError extends Error {
@@ -96,6 +101,14 @@ function valid(value: unknown): value is StoreSnapshot {
       value.messages,
       (row) => typeof row.data === "string" && number(row.editedAt),
     ) &&
+    (value.botPrompts === undefined ||
+      rows(
+        value.botPrompts,
+        (row) =>
+          typeof row.roomId === "string" &&
+          typeof row.id === "string" &&
+          typeof row.data === "string",
+      )) &&
     (value.receipts === undefined ||
       rows(
         value.receipts,

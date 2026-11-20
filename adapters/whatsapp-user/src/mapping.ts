@@ -8,8 +8,6 @@ import type {
   WaWrapper,
 } from "./types";
 
-// Individual chats, groups and the newer LID addresses are rooms. Status,
-// broadcast lists and channels (newsletters) are not.
 const ROOM_JID = /^[0-9A-Za-z._-]+(?::[0-9]+)?@(?:s\.whatsapp\.net|lid|g\.us)$/;
 const PREVIEW_CODEPOINTS = 200;
 const WRAPPERS = [
@@ -47,7 +45,20 @@ export function mediaLocation(
 }
 
 export function isRoomJid(jid: string): boolean {
-  return ROOM_JID.test(jid);
+  return ROOM_JID.test(jid) || isBotJid(jid);
+}
+
+export function isBotJid(
+  jid: string | null | undefined,
+): jid is `${string}@bot` {
+  return typeof jid === "string" && /^[0-9]+@bot$/.test(jid);
+}
+
+export function personalJid(jid: string): string | undefined {
+  return isRoomJid(jid) &&
+    (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid"))
+    ? jid.replace(/:\d+@/, "@")
+    : undefined;
 }
 
 export function jidUser(jid: string): string {
@@ -56,7 +67,7 @@ export function jidUser(jid: string): string {
 
 export function toSeconds(time: WaTime): number | null {
   const value = typeof time === "object" && time ? time.toNumber() : time;
-  return typeof value === "number" && Number.isFinite(value) && value > 0
+  return typeof value === "number" && value > 0 && value <= 8.64e12
     ? value
     : null;
 }
@@ -163,6 +174,7 @@ export function mapMessage(
   raw: WaMessageLike,
   editedAt?: number | null,
 ): Message | null {
+  if (raw.key.isViewOnce) return null;
   const id = raw.key.id;
   const roomId = raw.key.remoteJid;
   const seconds = toSeconds(raw.messageTimestamp);
@@ -171,14 +183,17 @@ export function mapMessage(
     return null;
   const fromMe = raw.key.fromMe === true;
   const receipt = deliveryStatus(raw);
-  const author = raw.key.participant ?? roomId;
+  const bot = isBotJid(roomId);
+  const author = bot ? roomId : (raw.key.participant ?? roomId);
   const attachment =
     content.attachment && messageAttachment(raw, content.attachment);
   return {
     id,
     roomId,
     ...(fromMe ? {} : { senderId: author }),
-    sender: fromMe ? "Me" : (raw.pushName ?? jidUser(author)),
+    sender: fromMe
+      ? "Me"
+      : (raw.pushName ?? (bot ? "Meta AI bot" : jidUser(author))),
     text: content.text,
     kind: content.kind,
     sentAt: iso(seconds),
@@ -196,11 +211,23 @@ export function mapRoom(
   newest?: Message,
 ): Room {
   const seconds = toSeconds(chat.conversationTimestamp);
-  const lastActivityAt = newest?.sentAt ?? (seconds ? iso(seconds) : undefined);
+  const chatActivity = seconds ? iso(seconds) : undefined;
+  const bot = isBotJid(id);
+  const lastActivityAt =
+    bot && chatActivity && (!newest || chatActivity > newest.sentAt)
+      ? chatActivity
+      : (newest?.sentAt ?? chatActivity);
   return {
     id,
-    title: chat.name ?? jidUser(id),
+    title: chat.name ?? (bot ? "Meta AI bot" : jidUser(id)),
     kind: id.endsWith("@g.us") ? "group" : "direct",
+    ...(bot && {
+      features: {
+        "messages.send": false,
+        "messages.reply": false,
+        "attachments.send": false,
+      },
+    }),
     unread: Math.max(0, chat.unreadCount ?? 0),
     ...(lastActivityAt ? { lastActivityAt } : {}),
     ...(newest?.text
