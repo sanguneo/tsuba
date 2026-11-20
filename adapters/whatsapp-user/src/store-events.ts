@@ -1,5 +1,5 @@
 import type { StreamUpdate } from "@tsuba/serve-kit";
-import { toSeconds } from "./mapping";
+import { isBotJid, toSeconds } from "./mapping";
 import { deliveryStatus } from "./receipts";
 import type { WaStore } from "./store";
 import type { WaDataEvent } from "./types";
@@ -32,6 +32,15 @@ export function applyStoreEvent(
       return event.messages.flatMap<StreamUpdate>((raw) => {
         const { remoteJid, id } = raw.key;
         const seen = !!remoteJid && !!id && store.has(remoteJid, id);
+        const folded = raw.message?.editedMessage?.message;
+        if (seen && isBotJid(remoteJid) && raw.key.fromMe === false && folded) {
+          const message = store.edit(
+            raw.key,
+            folded,
+            toSeconds(raw.messageTimestamp),
+          );
+          return message ? [{ event: "message.edited", message }] : [];
+        }
         const previous = remoteJid && id && store.find(remoteJid, id);
         const receipt = previous ? deliveryStatus(previous) : undefined;
         const message = store.put(raw);

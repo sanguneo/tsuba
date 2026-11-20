@@ -264,6 +264,22 @@ export class WaStore {
   edit(key: WaKey, content: WaContent, at: number | null): Message | null {
     const entry = this.entry(key);
     if (!entry || !shown(content)) return null;
+    if (isBotJid(key.remoteJid)) {
+      if (
+        key.fromMe == null ||
+        key.fromMe !== entry.raw.key.fromMe ||
+        key.participant ||
+        entry.raw.key.participant ||
+        key.isViewOnce
+      )
+        return null;
+      if (
+        entry.editedAt === at &&
+        typeof content.conversation === "string" &&
+        entry.raw.message?.conversation === content.conversation
+      )
+        return null;
+    }
     entry.raw = { ...entry.raw, message: content };
     entry.editedAt = at;
     const mapped = mapMessage(entry.raw, at);

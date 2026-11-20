@@ -45,6 +45,9 @@ export interface WaContent {
   readonly messageContextInfo?: {
     readonly messageSecret?: Uint8Array | null;
   } | null;
+  readonly richResponseMessage?: {
+    readonly unifiedResponse?: { readonly data?: Uint8Array | null } | null;
+  } | null;
   conversation?: string | null;
   extendedTextMessage?: {
     text?: string | null;
@@ -118,7 +121,8 @@ export type WaBotDiagnostic =
   | "unsupported-envelope"
   | "invalid-target"
   | "invalid-payload"
-  | "lookup-failed";
+  | "lookup-failed"
+  | "malformed-rich-response";
 
 /** What the socket reports about the chat and message state. */
 export type WaDataEvent =
