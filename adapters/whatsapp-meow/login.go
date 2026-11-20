@@ -47,6 +47,33 @@ func login(ctx context.Context, s *session, dir string) error {
 	}
 	phoneFile := os.Getenv("TSUBA_WHATSAPP_MEOW_PAIR_PHONE_FILE")
 	pairRequested := false
+	return awaitLogin(ctx, qr, connected, func(payload string) error {
+		if err := os.WriteFile(filepath.Join(dir, "qr.txt"), []byte(payload), 0o600); err != nil {
+			return fmt.Errorf("save private QR payload: %w", err)
+		}
+		fmt.Println("QR payload refreshed in the private session directory")
+		if phoneFile != "" && !pairRequested {
+			pairRequested = true
+			phone, readErr := os.ReadFile(phoneFile)
+			if readErr != nil || !phonePattern.MatchString(strings.TrimSpace(string(phone))) {
+				return errors.New("pair phone file must contain international digits only")
+			}
+			code, pairErr := s.link.client.PairPhone(ctx, strings.TrimSpace(string(phone)), true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+			if pairErr != nil {
+				return errLoginFailed
+			}
+			if err := os.WriteFile(filepath.Join(dir, "pair-code.txt"), []byte(code), 0o600); err != nil {
+				return fmt.Errorf("save private pair code: %w", err)
+			}
+			fmt.Println("pair code saved in the private session directory")
+		}
+		return nil
+	})
+}
+
+func awaitLogin(ctx context.Context, qr <-chan whatsmeow.QRChannelItem, connected <-chan struct{}, showCode func(string) error) error {
+	linked := false
+	var historyDone <-chan time.Time
 	for {
 		select {
 		case item, ok := <-qr:
@@ -56,40 +83,28 @@ func login(ctx context.Context, s *session, dir string) error {
 			}
 			switch item.Event {
 			case whatsmeow.QRChannelEventCode:
-				if err = os.WriteFile(filepath.Join(dir, "qr.txt"), []byte(item.Code), 0o600); err != nil {
-					return fmt.Errorf("save private QR payload: %w", err)
-				}
-				fmt.Println("QR payload refreshed in the private session directory")
-				if phoneFile != "" && !pairRequested {
-					pairRequested = true
-					phone, readErr := os.ReadFile(phoneFile)
-					if readErr != nil || !phonePattern.MatchString(strings.TrimSpace(string(phone))) {
-						return errors.New("pair phone file must contain international digits only")
-					}
-					code, pairErr := s.link.client.PairPhone(ctx, strings.TrimSpace(string(phone)), true, whatsmeow.PairClientChrome, "Chrome (Linux)")
-					if pairErr != nil {
-						return errLoginFailed
-					}
-					if err = os.WriteFile(filepath.Join(dir, "pair-code.txt"), []byte(code), 0o600); err != nil {
-						return fmt.Errorf("save private pair code: %w", err)
-					}
-					fmt.Println("pair code saved in the private session directory")
+				if err := showCode(item.Code); err != nil {
+					return err
 				}
 			case whatsmeow.QRChannelEventError, whatsmeow.QRChannelTimeout.Event:
 				return errLoginFailed
+			case whatsmeow.QRChannelSuccess.Event:
+				// The SDK has saved the device and acknowledged pairing.
+				linked = true
 			}
 		case <-connected:
-			// The linked device can receive its initial history after connection.
-			// This bounded window is not a promise of full WhatsApp history.
+			linked = true
+			connected = nil
 			timer := time.NewTimer(time.Minute)
 			defer timer.Stop()
-			select {
-			case <-timer.C:
-				return nil
-			case <-ctx.Done():
-				return errLoginFailed
-			}
+			historyDone = timer.C
+		case <-historyDone:
+			return nil
 		case <-ctx.Done():
+			// The deadline bounds best-effort history too, not just pairing.
+			if linked {
+				return nil
+			}
 			return errLoginFailed
 		}
 	}
