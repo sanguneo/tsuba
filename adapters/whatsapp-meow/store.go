@@ -247,7 +247,7 @@ func (s *Store) Rooms() []Room {
 		jid, err := types.ParseJID(entry.Room.ID)
 		if err != nil || !canonicalRoom.MatchString(entry.Room.ID) ||
 			entry.Meta.Archived || entry.Meta.Left ||
-			(len(entry.Messages) == 0 && !entry.Meta.Observed) {
+			(len(entry.Messages) == 0 && entry.Room.LastActivityAt == "" && !entry.Meta.Observed) {
 			continue
 		}
 		room := cloneRoom(entry.Room)

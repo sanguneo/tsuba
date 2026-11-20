@@ -118,8 +118,10 @@ lane reports its PR ready.
 ## Supported behavior and gaps
 
 The room list is partial (`complete: false`), capped at 500, and excludes
-archived rooms, groups the account has left, and history-only empty ordinary
-conversations. Observed participating groups and recognized bot rooms can stay
+archived rooms, groups the account has left, and ordinary address-book-only
+rows without cached messages or a conversation activity timestamp.
+Active metadata-only conversations remain visible even when the message
+window contains no readable content. Observed participating groups and recognized bot rooms can stay
 visible without a displayable message. There is no arbitrary age cutoff. Names
 come from synchronized contacts, sender push names, group titles, and bot
 metadata. On connection, retained rooms also recover contact/archive metadata

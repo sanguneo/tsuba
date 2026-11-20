@@ -22,15 +22,16 @@ import (
 
 func TestActiveRoomsHistoryVisibility(t *testing.T) {
 	for _, tc := range []struct {
-		name, user, server               string
-		archived, left, message, visible bool
+		name, user, server                         string
+		archived, left, message, activity, visible bool
 	}{
-		{"active", "000001", types.DefaultUserServer, false, false, true, true},
-		{"archived", "000002", types.DefaultUserServer, true, false, true, false},
-		{"left group", "000003", types.GroupServer, false, true, true, false},
-		{"empty despite timestamp", "000004", types.DefaultUserServer, false, false, false, false},
-		{"status", "status", types.BroadcastServer, false, false, true, false},
-		{"system", "000005", types.NewsletterServer, false, false, true, false},
+		{"active", "000001", types.DefaultUserServer, false, false, true, true, true},
+		{"archived", "000002", types.DefaultUserServer, true, false, true, true, false},
+		{"left group", "000003", types.GroupServer, false, true, true, true, false},
+		{"active metadata only", "000004", types.DefaultUserServer, false, false, false, true, true},
+		{"address book only", "000006", types.DefaultUserServer, false, false, false, false, false},
+		{"status", "status", types.BroadcastServer, false, false, true, true, false},
+		{"system", "000005", types.NewsletterServer, false, false, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, handler := httpTestHarness(t, httpTestSender{state: "open"})
@@ -38,7 +39,9 @@ func TestActiveRoomsHistoryVisibility(t *testing.T) {
 			id := types.NewJID(tc.user, tc.server).String()
 			conversation := &waHistorySync.Conversation{
 				ID: proto.String(id), Archived: proto.Bool(tc.archived), ReadOnly: proto.Bool(tc.left),
-				ConversationTimestamp: proto.Uint64(1735776000),
+			}
+			if tc.activity {
+				conversation.ConversationTimestamp = proto.Uint64(1735776000)
 			}
 			if tc.message {
 				conversation.Messages = []*waHistorySync.HistorySyncMsg{{Message: &waWeb.WebMessageInfo{
