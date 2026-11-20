@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -55,6 +58,7 @@ func TestMediaMappingExcludesViewOnceAndUnlocatableBytes(t *testing.T) {
 	for _, raw := range []*waE2E.Message{
 		{ViewOnceMessage: &waE2E.FutureProofMessage{Message: &waE2E.Message{ImageMessage: image}}},
 		{ImageMessage: &waE2E.ImageMessage{ViewOnce: new(true), Caption: new("synthetic")}},
+		{PtvMessage: &waE2E.VideoMessage{ViewOnce: new(true), MediaKey: []byte{1}, DirectPath: new("/synthetic")}},
 	} {
 		if msg := mapMessageEvent(syntheticBotEvent("once", raw)).message; msg != nil {
 			t.Fatal("view-once content must not be exposed")
@@ -70,6 +74,36 @@ func TestMediaMappingExcludesViewOnceAndUnlocatableBytes(t *testing.T) {
 	msg = mapMessageEvent(syntheticBotEvent("wrapped", wrapped)).message
 	if msg == nil || msg.Text != "synthetic wrapped" || len(msg.Attachments) != 1 {
 		t.Fatal("document caption wrapper lost")
+	}
+}
+
+func TestHTTPMediaExposesRetainedVideoNote(t *testing.T) {
+	sender := &httpMediaSender{httpTestSender: httpTestSender{state: "open"}}
+	store, handler := httpTestHarness(t, sender)
+	event := syntheticBotEvent("video-note", &waE2E.Message{PtvMessage: &waE2E.VideoMessage{
+		Mimetype: new("video/mp4"), MediaKey: []byte{1}, DirectPath: new("/synthetic"), Seconds: new(uint32(4)),
+	}})
+	event.Info.Chat = types.NewJID("000000", types.GroupServer)
+	storeMust(t, store.Apply(event, false))
+	server := httpTestServer(t, handler)
+
+	page := httpWire(t, server, wireRequest{method: http.MethodGet, path: "/messages?roomId=" + httpTestRoom, auth: httpTestBearer})
+	var listing struct {
+		Messages []Message `json:"messages"`
+	}
+	storeMust(t, json.Unmarshal(wireAnswer(t, page, http.StatusOK), &listing))
+	if len(listing.Messages) != 1 || listing.Messages[0].Kind != "media" || len(listing.Messages[0].Attachments) != 1 {
+		t.Fatalf("video note should appear as one media message with one attachment: %+v", listing.Messages)
+	}
+	attachment := listing.Messages[0].Attachments[0]
+	if attachment.Kind != "video" || attachment.DurationSeconds != 4 {
+		t.Fatalf("video note lost its video metadata: %+v", attachment)
+	}
+	file := httpWire(t, server, wireRequest{method: http.MethodGet, path: "/media?id=" + url.QueryEscape(attachment.ID), auth: httpTestBearer})
+	body, err := io.ReadAll(file.Body)
+	storeMust(t, err)
+	if file.StatusCode != http.StatusOK || file.Header.Get("Content-Type") != "video/mp4" || len(body) == 0 {
+		t.Fatalf("video note attachment did not resolve: status=%d type=%q bytes=%d", file.StatusCode, file.Header.Get("Content-Type"), len(body))
 	}
 }
 

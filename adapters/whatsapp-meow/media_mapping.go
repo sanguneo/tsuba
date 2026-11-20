@@ -27,12 +27,16 @@ func mediaLocation(id string) (string, string, bool) {
 		!strings.ContainsRune(message, '\x00') && mediaID(room, message) == id
 }
 
-// Only media exposed by the Baileys provider is represented. A payload without
-// download credentials may still have a caption, but has no attachment control.
+// A payload without download credentials may still have a caption, but has no
+// attachment control.
 func mediaMetadata(raw *waE2E.Message) (Attachment, string, string, whatsmeow.DownloadableMessage, bool) {
 	var a Attachment
 	var caption, reply string
 	var downloadable whatsmeow.DownloadableMessage
+	video := raw.GetVideoMessage()
+	if video == nil {
+		video = raw.GetPtvMessage()
+	}
 	switch {
 	case raw == nil:
 		return a, "", "", nil, false
@@ -43,8 +47,8 @@ func mediaMetadata(raw *waE2E.Message) (Attachment, string, string, whatsmeow.Do
 		}
 		a = Attachment{Kind: "image", MimeType: m.GetMimetype(), Size: m.GetFileLength(), Width: m.GetWidth(), Height: m.GetHeight()}
 		caption, reply, downloadable = m.GetCaption(), m.GetContextInfo().GetStanzaID(), m
-	case raw.GetVideoMessage() != nil:
-		m := raw.GetVideoMessage()
+	case video != nil:
+		m := video
 		if m.GetViewOnce() {
 			return a, "", "", nil, false
 		}
