@@ -11,6 +11,7 @@ import { connectWhatsApp } from "../adapters/whatsapp-user/src/session";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { bounded, deferred } from "./harness/barriers";
 import { fakeAuthState } from "./whatsapp-user-baileys-harness";
+import { directBotUnsupported } from "./whatsapp-user-fixtures";
 import { TARGET_LID } from "./whatsapp-user-send-harness";
 
 test("/send refuses a LID write before calling the SDK when own LID has not arrived", async () => {
@@ -26,6 +27,7 @@ test("/send refuses a LID write before calling the SDK when own LID has not arri
         makeSocket(config) {
           ready.resolve();
           return {
+            ...directBotUnsupported,
             ws: events,
             authState: fakeAuthState(config),
             ev: {

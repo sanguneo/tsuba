@@ -151,6 +151,8 @@ export type WaSocketEvent =
 
 /** One WhatsApp Web connection. Closed means closed: reconnecting opens a new one. */
 export interface WaSocket {
+  canSendDirectBotText(jid: string): Promise<boolean>;
+  sendDirectBotText(jid: string, text: string): Promise<WaMessageLike>;
   profilePictureUrl(jid: string): Promise<string | undefined>;
   onEvent(handler: (event: WaSocketEvent) => void): void;
   sendText(

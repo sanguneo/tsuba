@@ -62,7 +62,8 @@ function request(path: string, body?: object) {
 }
 
 test("a bot ciphertext stanza lists a read-only room without fabricating history", async () => {
-  const { handle, ws, link, config } = await fixture();
+  const { handle, ws, link, config, emit } = await fixture();
+  emit("connection.update", { connection: "open" });
   const diagnostics: unknown[] = [];
   link.subscribe((event) => {
     if (event.type === "botDiagnostic") diagnostics.push(event);

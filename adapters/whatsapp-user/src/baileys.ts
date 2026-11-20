@@ -12,6 +12,7 @@ import makeWASocket, {
   type WAMessage,
 } from "@whiskeysockets/baileys";
 import { bindDataEvents } from "./baileys-events";
+import { bindDirectBotSend, type DirectBotSocket } from "./direct-bot-send";
 import { isBotJid, unwrap } from "./mapping";
 import type { WaMessageLike, WaSocket, WaSocketEvent } from "./types";
 
@@ -22,7 +23,7 @@ type SocketConfig = Parameters<typeof makeWASocket>[0] & {
 };
 
 /** The part of a Baileys socket this adapter uses; a test can stand in for it. */
-export interface BaileysLike {
+export interface BaileysLike extends DirectBotSocket {
   authState: Pick<ReturnType<typeof makeWASocket>["authState"], "keys">;
   ws: {
     on(event: string, listener: (node: BinaryNode) => void): void;
@@ -304,6 +305,7 @@ export function openBaileys({
   };
 
   return {
+    ...bindDirectBotSend(ready, disconnected.signal),
     async profilePictureUrl(jid) {
       const { socket } = await ready;
       // 6.7.24 forwards timeoutMs to query/waitForMessage; no AbortSignal API.

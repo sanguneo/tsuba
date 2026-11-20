@@ -7,6 +7,10 @@ import { connectWhatsApp } from "./session";
 test("serve-kit accepts the personal WhatsApp declaration with its backend", () => {
   const link = connectWhatsApp({
     open: () => ({
+      canSendDirectBotText: async () => false,
+      sendDirectBotText: async () => {
+        throw new Error("Unexpected direct bot send");
+      },
       profilePictureUrl: async () => undefined,
       onEvent() {},
       sendText: async () => undefined,

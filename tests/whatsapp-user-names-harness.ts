@@ -14,6 +14,7 @@ import { WaStore } from "../adapters/whatsapp-user/src/store";
 import { createHandler } from "../packages/serve-kit/src/index";
 import { bounded, deferred } from "./harness/barriers";
 import { fakeAuthState } from "./whatsapp-user-baileys-harness";
+import { directBotUnsupported } from "./whatsapp-user-fixtures";
 
 export async function setupNames(store = new WaStore()) {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-names-"));
@@ -40,6 +41,7 @@ export async function setupNames(store = new WaStore()) {
         makeSocket(config) {
           made.resolve();
           return {
+            ...directBotUnsupported,
             ws: emitter,
             authState: fakeAuthState(config),
             profilePictureUrl: async () => undefined,
