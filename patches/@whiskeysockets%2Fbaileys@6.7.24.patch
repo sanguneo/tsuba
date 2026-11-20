@@ -1,16 +1,3 @@
-diff --git a/lib/Socket/messages-send.js b/lib/Socket/messages-send.js
-index 38bb9e04d4f1cc61c2b3512dee85d7b0b430764f..e9af4a7ef8062561c03308835197fcbc8a3dc875 100644
---- a/lib/Socket/messages-send.js
-+++ b/lib/Socket/messages-send.js
-@@ -409,7 +409,7 @@ export const makeMessagesSocket = (config) => {
-                 const otherJids = [];
-                 for (const { user, device } of devices) {
-                     const isMe = user === meUser;
--                    const jid = jidEncode(isMe && isLid ? authState.creds?.me?.lid.split(':')[0] || user : user, isLid ? 'lid' : 's.whatsapp.net', device);
-+                    const jid = jidEncode(isMe && isLid ? jidDecode(authState.creds.me.lid).user : user, isLid ? 'lid' : 's.whatsapp.net', device);
-                     if (isMe) {
-                         meJids.push(jid);
-                     }
 diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
 --- a/lib/Utils/messages-media.js
 +++ b/lib/Utils/messages-media.js
@@ -326,3 +313,606 @@ diff --git a/lib/Types/Socket.d.ts b/lib/Types/Socket.d.ts
 -//# sourceMappingURL=Socket.d.ts.map
 \ No newline at end of file
 +//# sourceMappingURL=Socket.d.ts.map
+diff --git a/lib/Signal/libsignal.js b/lib/Signal/libsignal.js
+index f4458db..1636597 100644
+--- a/lib/Signal/libsignal.js
++++ b/lib/Signal/libsignal.js
+@@ -76,8 +76,9 @@ export function makeLibSignalRepository(auth) {
+     };
+ }
+ const jidToSignalProtocolAddress = (jid) => {
+-    const { user, device } = jidDecode(jid);
+-    return new libsignal.ProtocolAddress(user, device || 0);
++    const { user, device, server } = jidDecode(jid);
++    // A native bot is not the PN whose digits happen to match its identifier.
++    return new libsignal.ProtocolAddress(server === 'bot' ? `${user}_bot` : user, device || 0);
+ };
+ const jidToSignalSenderKeyName = (group, user) => {
+     return new SenderKeyName(group, jidToSignalProtocolAddress(user));
+@@ -138,4 +139,4 @@ function signalStorage({ creds, keys }) {
+         }
+     };
+ }
+-//# sourceMappingURL=libsignal.js.map
+\ No newline at end of file
++//# sourceMappingURL=libsignal.js.map
+diff --git a/lib/Socket/business.d.ts b/lib/Socket/business.d.ts
+index c47c3f7..201e2d2 100644
+--- a/lib/Socket/business.d.ts
++++ b/lib/Socket/business.d.ts
+@@ -20,6 +20,8 @@ export declare const makeBusinessSocket: (config: SocketConfig) => {
+     rejectCall: (callId: string, callFrom: string) => Promise<void>;
+     fetchMessageHistory: (count: number, oldestMsgKey: import("../index.js").WAMessageKey, oldestMsgTimestamp: number | Long) => Promise<string>;
+     requestPlaceholderResend: (messageKey: import("../index.js").WAMessageKey) => Promise<string | undefined>;
++    canSendDirectBotText: (jid: string) => Promise<boolean>;
++    sendDirectBotText: (jid: string, text: string) => Promise<import("../Types/index.js").WAMessage>;
+     getPrivacyTokens: (jids: string[]) => Promise<any>;
+     assertSessions: (jids: string[], force: boolean) => Promise<boolean>;
+     relayMessage: (jid: string, message: import("../index.js").proto.IMessage, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }: import("../index.js").MessageRelayOptions) => Promise<string>;
+diff --git a/lib/Socket/communities.d.ts b/lib/Socket/communities.d.ts
+index 8069b71..1a7ae78 100644
+--- a/lib/Socket/communities.d.ts
++++ b/lib/Socket/communities.d.ts
+@@ -62,6 +62,8 @@ export declare const makeCommunitiesSocket: (config: SocketConfig) => {
+     rejectCall: (callId: string, callFrom: string) => Promise<void>;
+     fetchMessageHistory: (count: number, oldestMsgKey: WAMessageKey, oldestMsgTimestamp: number | Long) => Promise<string>;
+     requestPlaceholderResend: (messageKey: WAMessageKey) => Promise<string | undefined>;
++    canSendDirectBotText: (jid: string) => Promise<boolean>;
++    sendDirectBotText: (jid: string, text: string) => Promise<import("../Types/index.js").WAMessage>;
+     getPrivacyTokens: (jids: string[]) => Promise<any>;
+     assertSessions: (jids: string[], force: boolean) => Promise<boolean>;
+     relayMessage: (jid: string, message: proto.IMessage, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }: import("../Types/index.js").MessageRelayOptions) => Promise<string>;
+diff --git a/lib/Socket/direct-bot-send.js b/lib/Socket/direct-bot-send.js
+new file mode 100644
+index 0000000..484feb9
+--- /dev/null
++++ b/lib/Socket/direct-bot-send.js
+@@ -0,0 +1,97 @@
++import { randomBytes } from 'crypto';
++import { Boom } from '@hapi/boom';
++import { proto } from '../../WAProto/index.js';
++import { wrapMuse } from '../Utils/wasa-envelope.js';
++import { encodeSignedDeviceIdentity, generateMessageIDV2, unixTimestampSeconds } from '../Utils/index.js';
++import { getWasaRoot } from '../Utils/wasa-state.js';
++import { jidDecode, jidEncode } from '../WABinary/index.js';
++
++const META_AI = '867051314767696@bot';
++const MUSE = '1807055946647697@bot';
++const ACK = 'CB:ack,class:message';
++
++export class DirectBotSendUnavailableError extends Error {
++    constructor() {
++        super('Direct bot text is unavailable');
++        this.name = 'DirectBotSendUnavailableError';
++    }
++}
++
++async function route(authState, jid) {
++    const me = authState.creds.me;
++    if (!/^\d+(?::\d+)?@s\.whatsapp\.net$/.test(me?.id) || !/^\d+(?::\d+)?@lid$/.test(me?.lid)) return;
++    const lid = jidEncode(jidDecode(me.lid).user, 'lid');
++    if (jid === META_AI) return { lid, personaId: '867051314767696$760019659443059' };
++    if (jid === MUSE) {
++        const root = await getWasaRoot(authState, jid);
++        if (root) return { lid, personaId: '1807055946647697$1', root };
++    }
++}
++
++async function sendAndConfirm(sock, stanza, timeoutMs) {
++    let onAck, onClose, timer;
++    const ack = new Promise((resolve, reject) => {
++        onAck = ({ attrs }) => {
++            if (attrs.id !== stanza.attrs.id) return;
++            if (attrs.error !== undefined) reject(new Boom('WhatsApp returned an error acknowledgement', {
++                statusCode: ['401', '403', '404', '429'].includes(attrs.error) ? Number(attrs.error) : 500
++            }));
++            else resolve();
++        };
++        onClose = () => reject(new Boom('Connection closed before acknowledgement'));
++        timer = setTimeout(() => reject(new Boom('WhatsApp acknowledgement timed out')), timeoutMs);
++        sock.ws.on(ACK, onAck);
++        sock.ws.on('close', onClose);
++    });
++    try {
++        await Promise.all([ack, sock.sendNode(stanza)]);
++    } finally {
++        clearTimeout(timer);
++        sock.ws.off(ACK, onAck);
++        sock.ws.off('close', onClose);
++    }
++}
++
++export function directBotSender(sock, relay, timeoutMs) {
++    const { authState } = sock;
++    return {
++        canSendDirectBotText: async jid => Boolean(await route(authState, jid)),
++        sendDirectBotText: async (jid, text) => {
++            const target = await route(authState, jid);
++            if (!target) throw new DirectBotSendUnavailableError();
++            const meId = authState.creds.me.id;
++            const id = generateMessageIDV2(meId);
++            const key = { remoteJid: jid, fromMe: true, id };
++            const messageContextInfo = { messageSecret: randomBytes(32), botMetadata: { personaId: target.personaId } };
++            const message = { conversation: text, messageContextInfo };
++            const recipient = target.root ? await wrapMuse(message, key, { ...target, encIv: randomBytes(12) }) : message;
++            const copy = { deviceSentMessage: { destinationJid: jid, message }, messageContextInfo };
++            const { user, device: current } = jidDecode(meId);
++            // The SDK's device cache is keyed by PN. Query only ourselves; a bot
++            // has no USync device list and is a single Signal recipient at @bot.
++            const devices = await relay.getUSyncDevices([meId], true, true);
++            const self = jidDecode(target.lid).user;
++            const own = new Set([0, ...devices.filter(d => d.user === user).map(d => d.device)]);
++            own.delete(current || 0);
++            const companions = [...own].map(device => jidEncode(self, 'lid', device));
++            const content = await authState.keys.transaction(async () => {
++                await relay.assertSessions([jid, ...companions], false);
++                const bot = await relay.createParticipantNodes([jid], recipient);
++                const copies = await relay.createParticipantNodes(companions, copy);
++                const nodes = [{ tag: 'participants', attrs: {}, content: [...bot.nodes, ...copies.nodes] }];
++                if (bot.shouldIncludeDeviceIdentity || copies.shouldIncludeDeviceIdentity) nodes.push({
++                    tag: 'device-identity', attrs: {}, content: encodeSignedDeviceIdentity(authState.creds.account, true)
++                });
++                return nodes;
++            });
++            // Discovery and session negotiation can span an app-state rotation.
++            const active = await route(authState, jid);
++            if (!active || active.lid !== target.lid || meId !== authState.creds.me?.id ||
++                (target.root && (active.root?.id !== target.root.id ||
++                    !Buffer.from(target.root.secret).equals(active.root.secret)))) throw new DirectBotSendUnavailableError();
++            const messageTimestamp = unixTimestampSeconds();
++            await sendAndConfirm(sock, { tag: 'message', attrs: { to: jid, id, type: 'text' }, content }, timeoutMs);
++            return { key, message, messageTimestamp, status: proto.WebMessageInfo.Status.SERVER_ACK };
++        }
++    };
++}
+diff --git a/lib/Socket/index.d.ts b/lib/Socket/index.d.ts
+index 286bbd5..3276eba 100644
+--- a/lib/Socket/index.d.ts
++++ b/lib/Socket/index.d.ts
+@@ -49,6 +49,8 @@ declare const makeWASocket: (config: UserFacingSocketConfig) => {
+     rejectCall: (callId: string, callFrom: string) => Promise<void>;
+     fetchMessageHistory: (count: number, oldestMsgKey: import("../index.js").WAMessageKey, oldestMsgTimestamp: number | Long) => Promise<string>;
+     requestPlaceholderResend: (messageKey: import("../index.js").WAMessageKey) => Promise<string | undefined>;
++    canSendDirectBotText: (jid: string) => Promise<boolean>;
++    sendDirectBotText: (jid: string, text: string) => Promise<import("../Types/index.js").WAMessage>;
+     getPrivacyTokens: (jids: string[]) => Promise<any>;
+     assertSessions: (jids: string[], force: boolean) => Promise<boolean>;
+     relayMessage: (jid: string, message: import("../index.js").proto.IMessage, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }: import("../index.js").MessageRelayOptions) => Promise<string>;
+diff --git a/lib/Socket/messages-recv.d.ts b/lib/Socket/messages-recv.d.ts
+index ff5da3c..4a7cef5 100644
+--- a/lib/Socket/messages-recv.d.ts
++++ b/lib/Socket/messages-recv.d.ts
+@@ -9,6 +9,8 @@ export declare const makeMessagesRecvSocket: (config: SocketConfig) => {
+     rejectCall: (callId: string, callFrom: string) => Promise<void>;
+     fetchMessageHistory: (count: number, oldestMsgKey: WAMessageKey, oldestMsgTimestamp: number | Long) => Promise<string>;
+     requestPlaceholderResend: (messageKey: WAMessageKey) => Promise<string | undefined>;
++    canSendDirectBotText: (jid: string) => Promise<boolean>;
++    sendDirectBotText: (jid: string, text: string) => Promise<import("../Types/index.js").WAMessage>;
+     getPrivacyTokens: (jids: string[]) => Promise<any>;
+     assertSessions: (jids: string[], force: boolean) => Promise<boolean>;
+     relayMessage: (jid: string, message: proto.IMessage, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }: MessageRelayOptions) => Promise<string>;
+diff --git a/lib/Socket/messages-send.d.ts b/lib/Socket/messages-send.d.ts
+index 3b7c3b5..7824d14 100644
+--- a/lib/Socket/messages-send.d.ts
++++ b/lib/Socket/messages-send.d.ts
+@@ -4,6 +4,8 @@ import type { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelay
+ import { type BinaryNode, type JidWithDevice } from '../WABinary/index.js';
+ import { USyncQuery } from '../WAUSync/index.js';
+ export declare const makeMessagesSocket: (config: SocketConfig) => {
++    canSendDirectBotText: (jid: string) => Promise<boolean>;
++    sendDirectBotText: (jid: string, text: string) => Promise<import("../Types/index.js").WAMessage>;
+     getPrivacyTokens: (jids: string[]) => Promise<any>;
+     assertSessions: (jids: string[], force: boolean) => Promise<boolean>;
+     relayMessage: (jid: string, message: proto.IMessage, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }: MessageRelayOptions) => Promise<string>;
+diff --git a/lib/Socket/messages-send.js b/lib/Socket/messages-send.js
+index 38bb9e0..24821fa 100644
+--- a/lib/Socket/messages-send.js
++++ b/lib/Socket/messages-send.js
+@@ -7,6 +7,7 @@ import { getUrlInfo } from '../Utils/link-preview.js';
+ import { areJidsSameUser, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary/index.js';
+ import { USyncQuery, USyncUser } from '../WAUSync/index.js';
+ import { makeGroupsSocket } from './groups.js';
++import { directBotSender, DirectBotSendUnavailableError } from './direct-bot-send.js';
+ import { makeNewsletterSocket } from './newsletter.js';
+ export const makeMessagesSocket = (config) => {
+     const { logger, linkPreviewImageThumbnailWidth, generateHighQualityLinkPreview, options: axiosOptions, patchMessageBeforeSending, cachedGroupMetadata } = config;
+@@ -252,6 +253,8 @@ export const makeMessagesSocket = (config) => {
+         return { nodes, shouldIncludeDeviceIdentity };
+     };
+     const relayMessage = async (jid, message, { messageId: msgId, participant, additionalAttributes, additionalNodes, useUserDevicesCache, useCachedGroupMetadata, statusJidList }) => {
++        // The ordinary 1:1 path rebuilds recipients as PN and cannot relay a bot or its retries.
++        if (jid.endsWith('@bot')) throw new DirectBotSendUnavailableError();
+         const meId = authState.creds.me.id;
+         let shouldIncludeDeviceIdentity = false;
+         const { user, server } = jidDecode(jid);
+@@ -409,7 +412,7 @@ export const makeMessagesSocket = (config) => {
+                 const otherJids = [];
+                 for (const { user, device } of devices) {
+                     const isMe = user === meUser;
+-                    const jid = jidEncode(isMe && isLid ? authState.creds?.me?.lid.split(':')[0] || user : user, isLid ? 'lid' : 's.whatsapp.net', device);
++                    const jid = jidEncode(isMe && isLid ? jidDecode(authState.creds.me.lid).user : user, isLid ? 'lid' : 's.whatsapp.net', device);
+                     if (isMe) {
+                         meJids.push(jid);
+                     }
+@@ -571,6 +574,7 @@ export const makeMessagesSocket = (config) => {
+     const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update');
+     return {
+         ...sock,
++        ...directBotSender(sock, { getUSyncDevices, assertSessions, createParticipantNodes }, Math.min(config.defaultQueryTimeoutMs || 10000, 10000)),
+         getPrivacyTokens,
+         assertSessions,
+         relayMessage,
+@@ -710,4 +714,4 @@ export const makeMessagesSocket = (config) => {
+         }
+     };
+ };
+-//# sourceMappingURL=messages-send.js.map
+\ No newline at end of file
++//# sourceMappingURL=messages-send.js.map
+diff --git a/lib/Utils/wasa-envelope.d.ts b/lib/Utils/wasa-envelope.d.ts
+new file mode 100644
+index 0000000..d416da4
+--- /dev/null
++++ b/lib/Utils/wasa-envelope.d.ts
+@@ -0,0 +1,6 @@
++import type { proto } from '../../WAProto/index.js';
++export declare function wrapMuse(message: proto.IMessage, key: { readonly id: string; readonly remoteJid: string; readonly fromMe: true }, inputs: {
++    readonly lid: string;
++    readonly root: { readonly id: string; readonly secret: Uint8Array };
++    readonly encIv: Uint8Array;
++}): Promise<{ secretEncryptedMessage: proto.Message.ISecretEncryptedMessage }>;
+diff --git a/lib/Utils/wasa-envelope.js b/lib/Utils/wasa-envelope.js
+new file mode 100644
+index 0000000..f8d3a42
+--- /dev/null
++++ b/lib/Utils/wasa-envelope.js
+@@ -0,0 +1,17 @@
++import { proto } from '../../WAProto/index.js';
++import { aesEncryptGCM, hkdf } from './crypto.js';
++
++// whatsmeow 19d61352, msgsecret.go: encryptWASAMessage. The inner Message has
++// no Signal padding. Only the bot participant gets this envelope, never our DSM.
++export async function wrapMuse(prompt, key, { lid, root, encIv }) {
++    const botSecret = await hkdf(root.secret, 32, { info: 'Bot Message' });
++    const cipherKey = await hkdf(botSecret, 32, { info: `${key.id}${lid}${key.remoteJid}` });
++    const ctx = prompt.messageContextInfo;
++    const bytes = proto.Message.encode({ ...prompt, messageContextInfo: {
++        ...ctx, botMetadata: { ...ctx.botMetadata, capabilityMetadata: {} }
++    } }).finish();
++    return { secretEncryptedMessage: {
++        targetMessageKey: { ...key, id: root.id },
++        encIv, encPayload: aesEncryptGCM(bytes, cipherKey, encIv, Buffer.from(`${key.id}\0${lid}`))
++    } };
++}
+diff --git a/lib/index.d.ts b/lib/index.d.ts
+index c27a40f..86aa546 100644
+--- a/lib/index.d.ts
++++ b/lib/index.d.ts
+@@ -7,6 +7,7 @@ export * from './WABinary/index.js';
+ export * from './WAM/index.js';
+ export * from './WAUSync/index.js';
+ export type WASocket = ReturnType<typeof makeWASocket>;
++export declare class DirectBotSendUnavailableError extends Error {}
+ export { makeWASocket };
+ export default makeWASocket;
+-//# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=index.d.ts.map
+diff --git a/lib/index.js b/lib/index.js
+index e1f37c6..1fcccf3 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -7,5 +7,6 @@ export * from './WABinary/index.js';
+ export * from './WAM/index.js';
+ export * from './WAUSync/index.js';
+ export { makeWASocket };
++export { DirectBotSendUnavailableError } from './Socket/direct-bot-send.js';
+ export default makeWASocket;
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map
+diff --git a/lib/Socket/chats.js b/lib/Socket/chats.js
+index 85d01de..f329552 100644
+--- a/lib/Socket/chats.js
++++ b/lib/Socket/chats.js
+@@ -6,6 +6,7 @@ import { ALL_WA_PATCH_NAMES } from '../Types/index.js';
+ import { SyncState } from '../Types/State.js';
+ import { chatModificationToAppPatch, decodePatches, decodeSyncdSnapshot, encodeSyncdPatch, extractSyncdPatches, generateProfilePicture, getHistoryMsg, newLTHashState, processSyncAction } from '../Utils/index.js';
+ import { makeMutex } from '../Utils/make-mutex.js';
++import { wasaCollection, wasaIndex, wasaOwner } from '../Utils/wasa-state.js';
+ import processMessage from '../Utils/process-message.js';
+ import { getBinaryNodeChild, getBinaryNodeChildren, jidDecode, jidNormalizedUser, reduceBinaryNodeToDictionary, S_WHATSAPP_NET } from '../WABinary/index.js';
+ import { USyncQuery, USyncUser } from '../WAUSync/index.js';
+@@ -361,6 +362,7 @@ export const makeChatsSocket = (config) => {
+         // otherwise when we resync from scratch -- all notifications will fire
+         const initialVersionMap = {};
+         const globalMutationMap = {};
++        const owner = wasaOwner(authState.creds);
+         await authState.keys.transaction(async () => {
+             const collectionsToHandle = new Set(collections);
+             // in case something goes wrong -- ensure we don't enter a loop that cannot be exited from
+@@ -379,7 +381,9 @@ export const makeChatsSocket = (config) => {
+                             initialVersionMap[name] = state.version;
+                         }
+                     }
+-                    else {
++                    // Pre-upgrade cursors have no WASA projection: request one full
++                    // snapshot without replaying all historic public chat events.
++                    if (!state || (name === wasaCollection && (!state.wasaRoots || state.wasaOwner !== owner))) {
+                         state = newLTHashState();
+                     }
+                     states[name] = state;
+@@ -415,9 +419,15 @@ export const makeChatsSocket = (config) => {
+                     const name = key;
+                     const { patches, hasMorePatches, snapshot } = decoded[name];
+                     try {
++                        if (name === wasaCollection && !states[name].version && initialVersionMap[name] > 0 && !snapshot)
++                            throw new Boom('Expected a replacement WASA collection snapshot');
+                         if (snapshot) {
+                             const { state: newState, mutationMap } = await decodeSyncdSnapshot(name, snapshot, getAppStateSyncKey, initialVersionMap[name], appStateMacVerification.snapshot);
+                             states[name] = newState;
++                            if (name === wasaCollection) {
++                                newState.wasaOwner = owner;
++                                newState.wasaPending = hasMorePatches || !!patches.length;
++                            }
+                             Object.assign(globalMutationMap, mutationMap);
+                             logger.info(`restored state of ${name} from snapshot to v${newState.version} with mutations`);
+                             await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
+@@ -425,11 +435,18 @@ export const makeChatsSocket = (config) => {
+                         // only process if there are syncd patches
+                         if (patches.length) {
+                             const { state: newState, mutationMap } = await decodePatches(name, patches, states[name], getAppStateSyncKey, config.options, initialVersionMap[name], logger, appStateMacVerification.patch);
++                            if (name === wasaCollection) {
++                                newState.wasaOwner = owner;
++                                newState.wasaPending = hasMorePatches;
++                            }
+                             await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
+                             logger.info(`synced ${name} to v${newState.version}`);
+                             initialVersionMap[name] = newState.version;
+                             Object.assign(globalMutationMap, mutationMap);
+                         }
++                        if (name === wasaCollection && !snapshot && !patches.length && states[name].wasaPending && !hasMorePatches) {
++                            await authState.keys.set({ 'app-state-sync-version': { [name]: { ...states[name], wasaPending: false } } });
++                        }
+                         if (hasMorePatches) {
+                             logger.info(`${name} has more patches...`);
+                         }
+@@ -445,7 +462,12 @@ export const makeChatsSocket = (config) => {
+                             error.output?.statusCode === 404 ||
+                             error.name === 'TypeError';
+                         logger.info({ name, error: error.stack }, `failed to sync state from version${isIrrecoverableError ? '' : ', removing and trying from scratch'}`);
+-                        await authState.keys.set({ 'app-state-sync-version': { [name]: null } });
++                        // Retain only the anti-rollback floor; a missing projection
++                        // forces the next sync to start from an authenticated snapshot.
++                        const floor = name === wasaCollection ? {
++                            ...newLTHashState(), version: Math.max(initialVersionMap[name] || 0, states[name]?.version || 0)
++                        } : null;
++                        await authState.keys.set({ 'app-state-sync-version': { [name]: floor } });
+                         // increment number of retries
+                         attemptsMap[name] = (attemptsMap[name] || 0) + 1;
+                         if (isIrrecoverableError) {
+@@ -568,6 +590,8 @@ export const makeChatsSocket = (config) => {
+         }
+     };
+     const appPatch = async (patchCreate) => {
++        if (patchCreate.index?.[0] === wasaIndex)
++            throw new Boom('WASA root state is receive-only', { statusCode: 400 });
+         const name = patchCreate.type;
+         const myAppStateKeyId = authState.creds.myAppStateKeyId;
+         if (!myAppStateKeyId) {
+@@ -930,4 +954,4 @@ export const makeChatsSocket = (config) => {
+         star
+     };
+ };
+-//# sourceMappingURL=chats.js.map
+\ No newline at end of file
++//# sourceMappingURL=chats.js.map
+diff --git a/lib/Types/Auth.d.ts b/lib/Types/Auth.d.ts
+index 83ae63f..074c08e 100644
+--- a/lib/Types/Auth.d.ts
++++ b/lib/Types/Auth.d.ts
+@@ -20,6 +20,10 @@ export type SignalIdentity = {
+     identifierKey: Uint8Array;
+ };
+ export type LTHashState = {
++    /** Private projection committed with the verified regular_high cursor. */
++    readonly wasaOwner?: string;
++    readonly wasaPending?: boolean;
++    readonly wasaRoots?: Readonly<Record<string, { readonly id: string; readonly secret: Uint8Array }>>;
+     version: number;
+     hash: Buffer;
+     indexValueMap: {
+@@ -101,4 +105,4 @@ export type AuthenticationState = {
+     keys: SignalKeyStore;
+ };
+ export {};
+-//# sourceMappingURL=Auth.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=Auth.d.ts.map
+diff --git a/lib/Utils/chat-utils.js b/lib/Utils/chat-utils.js
+index 31615b9..3a02a4a 100644
+--- a/lib/Utils/chat-utils.js
++++ b/lib/Utils/chat-utils.js
+@@ -6,6 +6,7 @@ import { aesDecrypt, aesEncrypt, hkdf, hmacSign } from './crypto.js';
+ import { toNumber } from './generics.js';
+ import { LT_HASH_ANTI_TAMPERING } from './lt-hash.js';
+ import { downloadContentFromMessage } from './messages-media.js';
++import { decodeActiveWasaRoot, isWasaBot, wasaCollection, wasaIndex } from './wasa-state.js';
+ const mutationKeys = async (keydata) => {
+     const expanded = await hkdf(keydata, 160, { info: 'WhatsApp Mutation Keys' });
+     return {
+@@ -134,7 +135,7 @@ export const encodeSyncdPatch = async ({ type, index, syncAction, apiVersion, op
+     state.indexValueMap[base64Index] = { valueMac };
+     return { patch, state };
+ };
+-export const decodeSyncdMutations = async (msgMutations, initialState, getAppStateSyncKey, onMutation, validateMacs) => {
++export const decodeSyncdMutations = async (msgMutations, initialState, getAppStateSyncKey, onMutation, validateMacs, wasaRoots) => {
+     const ltGenerator = makeLtHashGenerator(initialState);
+     // indexKey used to HMAC sign record.index.blob
+     // valueEncryptionKey used to AES-256-CBC encrypt record.value.blob[0:-32]
+@@ -163,7 +164,17 @@ export const decodeSyncdMutations = async (msgMutations, initialState, getAppSta
+             }
+         }
+         const indexStr = Buffer.from(syncAction.index).toString();
+-        onMutation({ syncAction, index: JSON.parse(indexStr) });
++        const index = JSON.parse(indexStr);
++        if (index?.[0] === wasaIndex) {
++            // Stage privately until the enclosing snapshot/patch MAC also succeeds.
++            if (validateMacs && wasaRoots && Array.isArray(index) && index.length === 2 && isWasaBot(index[1])) {
++                const root = operation === proto.SyncdMutation.SyncdOperation.SET ? decodeActiveWasaRoot(result) : undefined;
++                if (root) wasaRoots[index[1]] = root;
++                else delete wasaRoots[index[1]];
++            }
++        } else {
++            onMutation({ syncAction, index });
++        }
+         ltGenerator.mix({
+             indexMac: record.index.blob,
+             valueMac: ogValueMac,
+@@ -183,7 +194,7 @@ export const decodeSyncdMutations = async (msgMutations, initialState, getAppSta
+         return mutationKeys(keyEnc.keyData);
+     }
+ };
+-export const decodeSyncdPatch = async (msg, name, initialState, getAppStateSyncKey, onMutation, validateMacs) => {
++export const decodeSyncdPatch = async (msg, name, initialState, getAppStateSyncKey, onMutation, validateMacs, wasaRoots) => {
+     if (validateMacs) {
+         const base64Key = Buffer.from(msg.keyId.id).toString('base64');
+         const mainKeyObj = await getAppStateSyncKey(base64Key);
+@@ -197,7 +208,7 @@ export const decodeSyncdPatch = async (msg, name, initialState, getAppStateSyncK
+             throw new Boom('Invalid patch mac');
+         }
+     }
+-    const result = await decodeSyncdMutations(msg.mutations, initialState, getAppStateSyncKey, onMutation, validateMacs);
++    const result = await decodeSyncdMutations(msg.mutations, initialState, getAppStateSyncKey, onMutation, validateMacs, wasaRoots);
+     return result;
+ };
+ export const extractSyncdPatches = async (result, options) => {
+@@ -254,12 +265,18 @@ export const decodeSyncdSnapshot = async (name, snapshot, getAppStateSyncKey, mi
+     newState.version = toNumber(snapshot.version.version);
+     const mutationMap = {};
+     const areMutationsRequired = typeof minimumVersionNumber === 'undefined' || newState.version > minimumVersionNumber;
++    if (name === wasaCollection) {
++        if (newState.version < minimumVersionNumber)
++            throw new Boom('Stale WASA collection snapshot');
++        validateMacs = true;
++        newState.wasaRoots = {};
++    }
+     const { hash, indexValueMap } = await decodeSyncdMutations(snapshot.records, newState, getAppStateSyncKey, areMutationsRequired
+         ? mutation => {
+             const index = mutation.syncAction.index?.toString();
+             mutationMap[index] = mutation;
+         }
+-        : () => { }, validateMacs);
++        : () => { }, validateMacs, newState.wasaRoots);
+     newState.hash = hash;
+     newState.indexValueMap = indexValueMap;
+     if (validateMacs) {
+@@ -285,6 +302,10 @@ export const decodePatches = async (name, syncds, initial, getAppStateSyncKey, o
+         indexValueMap: { ...initial.indexValueMap }
+     };
+     const mutationMap = {};
++    if (name === wasaCollection) {
++        validateMacs = true;
++        newState.wasaRoots = { ...initial.wasaRoots };
++    }
+     for (const syncd of syncds) {
+         const { version, keyId, snapshotMac } = syncd;
+         if (syncd.externalMutations) {
+@@ -294,6 +315,8 @@ export const decodePatches = async (name, syncds, initial, getAppStateSyncKey, o
+             syncd.mutations?.push(...ref.mutations);
+         }
+         const patchVersion = toNumber(version.version);
++        if (name === wasaCollection && patchVersion !== newState.version + 1)
++            throw new Boom('Non-consecutive WASA collection patch');
+         newState.version = patchVersion;
+         const shouldMutate = typeof minimumVersionNumber === 'undefined' || patchVersion > minimumVersionNumber;
+         const decodeResult = await decodeSyncdPatch(syncd, name, newState, getAppStateSyncKey, shouldMutate
+@@ -301,7 +324,7 @@ export const decodePatches = async (name, syncds, initial, getAppStateSyncKey, o
+                 const index = mutation.syncAction.index?.toString();
+                 mutationMap[index] = mutation;
+             }
+-            : () => { }, true);
++            : () => { }, true, name === wasaCollection ? newState.wasaRoots : undefined);
+         newState.hash = decodeResult.hash;
+         newState.indexValueMap = decodeResult.indexValueMap;
+         if (validateMacs) {
+@@ -743,4 +766,4 @@ export const processSyncAction = (syncAction, ev, me, initialSyncOpts, logger) =
+         return lastMsgTimestamp >= chatLastMsgTimestamp;
+     }
+ };
+-//# sourceMappingURL=chat-utils.js.map
+\ No newline at end of file
++//# sourceMappingURL=chat-utils.js.map
+diff --git a/lib/Utils/wasa-state.d.ts b/lib/Utils/wasa-state.d.ts
+new file mode 100644
+index 0000000..0c91f9f
+--- /dev/null
++++ b/lib/Utils/wasa-state.d.ts
+@@ -0,0 +1,5 @@
++import type { AuthenticationState } from '../Types/Auth.js';
++
++/** SDK internal; never expose the returned bytes through the socket or events. */
++export declare const getWasaRoot: (auth: AuthenticationState, bot: string) =>
++    Promise<{ readonly id: string; readonly secret: Uint8Array } | undefined>;
+diff --git a/lib/Utils/wasa-state.js b/lib/Utils/wasa-state.js
+new file mode 100644
+index 0000000..a7790e5
+--- /dev/null
++++ b/lib/Utils/wasa-state.js
+@@ -0,0 +1,56 @@
++import protobuf from 'protobufjs/light.js';
++import { jidNormalizedUser } from '../WABinary/jid-utils.js';
++
++export const wasaCollection = 'regular_high';
++export const wasaIndex = 'wasa_root_secret';
++const botAddress = /^\d+@bot$/;
++
++// Decode-only projection of waSyncAction at whatsmeow 8b41cfe6d9. Keep field 89
++// out of the public WAProto action/event objects and the outbound patch encoder.
++const actionData = protobuf.Root.fromJSON({ nested: {
++    ActionData: { fields: { value: { type: 'ActionValue', id: 2 } } },
++    ActionValue: { fields: { roots: { type: 'Roots', id: 89 } } },
++    Roots: { fields: { entries: { rule: 'repeated', type: 'Entry', id: 1 } } },
++    Entry: { fields: {
++        id: { type: 'string', id: 1 }, secret: { type: 'bytes', id: 2 },
++        epoch: { type: 'int64', id: 3 }, status: { type: 'int32', id: 4 }
++    } }
++} }).lookupType('ActionData');
++
++// No downgrade to an older entry if the latest ACTIVE entry is incomplete.
++export const decodeActiveWasaRoot = (bytes) => {
++    const entries = actionData.decode(bytes).value?.roots?.entries ?? [];
++    let latest;
++    let tied = false;
++    for (const entry of entries) {
++        if (entry.status !== 1) continue;
++        const epoch = BigInt(entry.epoch.toString());
++        if (!latest || epoch > latest.epoch) {
++            latest = { epoch, entry };
++            tied = false;
++        } else if (epoch === latest.epoch) {
++            tied = true;
++        }
++    }
++    const selected = latest?.entry;
++    if (!tied && selected?.id && selected.secret.length === 32) {
++        return { id: selected.id, secret: Buffer.from(selected.secret) };
++    }
++};
++
++export const isWasaBot = (jid) => typeof jid === 'string' && botAddress.test(jid);
++export const wasaOwner = (creds) => {
++    const lid = creds.me?.lid;
++    if (typeof lid === 'string' && /^\d+(?::\d+)?@lid$/.test(lid)) return jidNormalizedUser(lid);
++};
++
++export const getWasaRoot = async ({ creds, keys }, bot) => {
++    const owner = wasaOwner(creds);
++    if (!owner || !isWasaBot(bot)) return;
++    const { [wasaCollection]: state } = await keys.get('app-state-sync-version', [wasaCollection]);
++    if (state?.wasaOwner !== owner || state.wasaPending) return;
++    const root = state.wasaRoots?.[bot];
++    if (typeof root?.id === 'string' && root.id && root.secret instanceof Uint8Array && root.secret.length === 32) {
++        return { id: root.id, secret: Buffer.from(root.secret) };
++    }
++};
