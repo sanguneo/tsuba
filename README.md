@@ -29,6 +29,7 @@
 - `adapters/discord` — discord.js 기반 **봇 계정**. 봇을 초대한 서버의 일반 텍스트 채널, 이전 메시지, 첨부, 커서 스트림(수정·삭제·반응 포함), 전송과 답장, 수정, 삭제, 반응
 - `adapters/slack` — 공식 사용자 토큰과 Socket Mode 로 **내 계정**. 채널·비공개 채널·DM·그룹 DM, 이전 메시지, 첨부, 커서 스트림(수정·삭제·반응 포함), 전송과 답장(스레드+채널), 수정, 삭제, 반응, 읽음 처리
 - `adapters/whatsapp-user` — Baileys 기반 **개인 WhatsApp 계정**(비공식 클라이언트, 계정 정지 위험이 있으니 `docs/whatsapp-user.md` 를 먼저 읽으세요). 방 목록, 이전 메시지(어댑터가 본 범위), 커서 없는 스트림(수정·삭제 포함), 텍스트 전송과 답장
+- `adapters/whatsapp-meow` — 별도 Go/whatsmeow 기반 **개인 WhatsApp 계정** 제공자. 기존 Baileys 어댑터를 유지하며, 별도 세션으로 방·텍스트 기록·실시간 수신·Muse rich 응답과 텍스트 발송을 제공합니다. 빌드·로그인·기능 차이는 [`docs/whatsapp-meow.md`](docs/whatsapp-meow.md)를 보세요. 실계정 검증은 수행하지 않았습니다.
 - `docs/telegram.md`, `docs/discord.md`, `docs/slack.md`, `docs/discord-user.md`, `docs/whatsapp-user.md` — 실행 방법과 구현된 기능/한계
 - `docs/references.md` — 구현 전에 검토한 참고 저장소와 가져올 것
 
