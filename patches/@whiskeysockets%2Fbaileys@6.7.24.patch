@@ -612,7 +612,7 @@ index e1f37c6..1fcccf3 100644
 \ No newline at end of file
 +//# sourceMappingURL=index.js.map
 diff --git a/lib/Socket/chats.js b/lib/Socket/chats.js
-index 85d01de..f329552 100644
+index 85d01de..077d06a 100644
 --- a/lib/Socket/chats.js
 +++ b/lib/Socket/chats.js
 @@ -6,6 +6,7 @@ import { ALL_WA_PATCH_NAMES } from '../Types/index.js';
@@ -623,15 +623,43 @@ index 85d01de..f329552 100644
  import processMessage from '../Utils/process-message.js';
  import { getBinaryNodeChild, getBinaryNodeChildren, jidDecode, jidNormalizedUser, reduceBinaryNodeToDictionary, S_WHATSAPP_NET } from '../WABinary/index.js';
  import { USyncQuery, USyncUser } from '../WAUSync/index.js';
-@@ -361,6 +362,7 @@ export const makeChatsSocket = (config) => {
+@@ -17,6 +18,8 @@ export const makeChatsSocket = (config) => {
+     const { ev, ws, authState, generateMessageTag, sendNode, query, onUnexpectedError } = sock;
+     let privacySettings;
+     let syncState = SyncState.Connecting;
++    const linkedWasaOwner = wasaOwner(authState.creds);
++    const disconnected = new AbortController();
+     /** this mutex ensures that the notifications (receipts, messages etc.) are processed in order */
+     const processingMutex = makeMutex();
+     // Timeout for AwaitingInitialSync state
+@@ -356,12 +359,24 @@ export const makeChatsSocket = (config) => {
+             }
+         };
+     };
+-    const resyncAppState = ev.createBufferedFunction(async (collections, isInitialSync) => {
++    const syncAppState = async (collections, isInitialSync, bootstrapOwner) => {
+         // we use this to determine which events to fire
          // otherwise when we resync from scratch -- all notifications will fire
          const initialVersionMap = {};
          const globalMutationMap = {};
+-        await authState.keys.transaction(async () => {
 +        const owner = wasaOwner(authState.creds);
-         await authState.keys.transaction(async () => {
++        const timeout = bootstrapOwner ? 5000 : undefined;
++        const signal = bootstrapOwner ? AbortSignal.any([disconnected.signal, AbortSignal.timeout(timeout)]) : undefined;
++        const options = signal ? { ...config.options, signal, timeout, maxRedirects: 0 } : config.options;
++        const sync = async () => {
++            if (bootstrapOwner) {
++                const key = authState.creds.myAppStateKeyId;
++                if (signal.aborted || bootstrapOwner !== owner || !key || authState.keys.isInTransaction())
++                    return;
++                const current = await authState.keys.get('app-state-sync-version', [wasaCollection]);
++                if (current[wasaCollection] || !(await getAppStateSyncKey(key))?.keyData?.length || signal.aborted)
++                    return;
++            }
              const collectionsToHandle = new Set(collections);
              // in case something goes wrong -- ensure we don't enter a loop that cannot be exited from
-@@ -379,7 +381,9 @@ export const makeChatsSocket = (config) => {
+             const attemptsMap = {};
+@@ -379,7 +394,9 @@ export const makeChatsSocket = (config) => {
                              initialVersionMap[name] = state.version;
                          }
                      }
@@ -642,7 +670,22 @@ index 85d01de..f329552 100644
                          state = newLTHashState();
                      }
                      states[name] = state;
-@@ -415,9 +419,15 @@ export const makeChatsSocket = (config) => {
+@@ -408,28 +425,58 @@ export const makeChatsSocket = (config) => {
+                             content: nodes
+                         }
+                     ]
+-                });
++                }, timeout);
++                signal?.throwIfAborted();
++                if (bootstrapOwner) {
++                    const pages = getBinaryNodeChildren(getBinaryNodeChild(result, 'sync'), 'collection');
++                    if (pages.length !== 1 || pages[0].attrs.name !== wasaCollection || pages[0].attrs.has_more_patches === 'true')
++                        return;
++                }
+                 // extract from binary node
+-                const decoded = await extractSyncdPatches(result, config?.options);
++                const decoded = await extractSyncdPatches(result, options);
+                 for (const key in decoded) {
                      const name = key;
                      const { patches, hasMorePatches, snapshot } = decoded[name];
                      try {
@@ -657,27 +700,49 @@ index 85d01de..f329552 100644
 +                            }
                              Object.assign(globalMutationMap, mutationMap);
                              logger.info(`restored state of ${name} from snapshot to v${newState.version} with mutations`);
-                             await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
-@@ -425,11 +435,18 @@ export const makeChatsSocket = (config) => {
+-                            await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
++                            if (!bootstrapOwner)
++                                await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
+                         }
                          // only process if there are syncd patches
                          if (patches.length) {
-                             const { state: newState, mutationMap } = await decodePatches(name, patches, states[name], getAppStateSyncKey, config.options, initialVersionMap[name], logger, appStateMacVerification.patch);
+-                            const { state: newState, mutationMap } = await decodePatches(name, patches, states[name], getAppStateSyncKey, config.options, initialVersionMap[name], logger, appStateMacVerification.patch);
+-                            await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
++                            const { state: newState, mutationMap } = await decodePatches(name, patches, states[name], getAppStateSyncKey, options, initialVersionMap[name], logger, appStateMacVerification.patch);
 +                            if (name === wasaCollection) {
 +                                newState.wasaOwner = owner;
 +                                newState.wasaPending = hasMorePatches;
 +                            }
-                             await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
++                            if (bootstrapOwner)
++                                states[name] = newState;
++                            else
++                                await authState.keys.set({ 'app-state-sync-version': { [name]: newState } });
                              logger.info(`synced ${name} to v${newState.version}`);
                              initialVersionMap[name] = newState.version;
                              Object.assign(globalMutationMap, mutationMap);
                          }
++                        if (bootstrapOwner && (snapshot || patches.length)) {
++                            // Only a complete page can commit its cursor and public mutations.
++                            signal.throwIfAborted();
++                            if (wasaOwner(authState.creds) !== owner || authState.keys.isInTransaction())
++                                throw new Boom('WASA bootstrap no longer owns the cursor');
++                            await authState.keys.set({ 'app-state-sync-version': { [name]: states[name] } });
++                        }
 +                        if (name === wasaCollection && !snapshot && !patches.length && states[name].wasaPending && !hasMorePatches) {
 +                            await authState.keys.set({ 'app-state-sync-version': { [name]: { ...states[name], wasaPending: false } } });
 +                        }
                          if (hasMorePatches) {
                              logger.info(`${name} has more patches...`);
                          }
-@@ -445,7 +462,12 @@ export const makeChatsSocket = (config) => {
+@@ -439,13 +486,20 @@ export const makeChatsSocket = (config) => {
+                         }
+                     }
+                     catch (error) {
++                        if (bootstrapOwner)
++                            throw error;
+                         // if retry attempts overshoot
+                         // or key not found
+                         const isIrrecoverableError = attemptsMap[name] >= MAX_SYNC_ATTEMPTS ||
                              error.output?.statusCode === 404 ||
                              error.name === 'TypeError';
                          logger.info({ name, error: error.stack }, `failed to sync state from version${isIrrecoverableError ? '' : ', removing and trying from scratch'}`);
@@ -691,7 +756,29 @@ index 85d01de..f329552 100644
                          // increment number of retries
                          attemptsMap[name] = (attemptsMap[name] || 0) + 1;
                          if (isIrrecoverableError) {
-@@ -568,6 +590,8 @@ export const makeChatsSocket = (config) => {
+@@ -455,12 +509,19 @@ export const makeChatsSocket = (config) => {
+                     }
+                 }
+             }
+-        });
++        };
++        // The one-page bootstrap has only one write. Do not use the SDK
++        // transaction here: it can swallow a failed commit and emit twice.
++        if (bootstrapOwner)
++            await sync();
++        else
++            await authState.keys.transaction(sync);
+         const { onMutation } = newAppStateChunkHandler(isInitialSync);
+         for (const key in globalMutationMap) {
+             onMutation(globalMutationMap[key]);
+         }
+-    });
++    };
++    const resyncAppState = ev.createBufferedFunction(syncAppState);
+     /**
+      * fetch the profile picture of a user/group
+      * type = "preview" for a low res picture
+@@ -568,6 +629,8 @@ export const makeChatsSocket = (config) => {
          }
      };
      const appPatch = async (patchCreate) => {
@@ -700,7 +787,32 @@ index 85d01de..f329552 100644
          const name = patchCreate.type;
          const myAppStateKeyId = authState.creds.myAppStateKeyId;
          if (!myAppStateKeyId) {
-@@ -930,4 +954,4 @@ export const makeChatsSocket = (config) => {
+@@ -854,6 +917,11 @@ export const makeChatsSocket = (config) => {
+         }
+     });
+     ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
++        if (connection === 'close') {
++            clearTimeout(awaitingSyncTimeout);
++            disconnected.abort();
++            return;
++        }
+         if (connection === 'open') {
+             if (fireInitQueries) {
+                 executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'));
+@@ -884,6 +952,12 @@ export const makeChatsSocket = (config) => {
+                 logger.warn('Timeout in AwaitingInitialSync, forcing state to Online and flushing buffer');
+                 syncState = SyncState.Online;
+                 ev.flush();
++                if (linkedWasaOwner) {
++                    // Use the normal resync without restarting initial event buffering.
++                    // Serialize with server_sync and history before checking the cursor.
++                    void processingMutex.mutex(() => syncAppState([wasaCollection], false, linkedWasaOwner))
++                        .catch(() => logger.debug('Optional WASA bootstrap did not complete'));
++                }
+             }
+         }, 20000);
+     });
+@@ -930,4 +1004,4 @@ export const makeChatsSocket = (config) => {
          star
      };
  };
