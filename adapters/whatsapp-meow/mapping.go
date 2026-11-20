@@ -106,6 +106,11 @@ func mapMessageEvent(evt *events.Message, self ...types.JID) mappedEvent {
 			if target := info.MsgBotInfo.EditTargetID; target != "" {
 				id = target
 			} else if !wrappedEdit && !evt.IsEdit && info.Edit != types.EditAttributeMessageEdit {
+				// A complete bot response, including generated media, can be
+				// delivered directly without replacing an earlier fragment.
+				if info.MsgBotInfo.EditType == types.EditTypeFull {
+					break
+				}
 				return result
 			}
 			editedAt = info.MsgBotInfo.EditSenderTimestampMS
