@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -18,6 +19,7 @@ import (
 
 const (
 	storeRoomLimit        = 500
+	storeDeletionLimit    = 500
 	storeMessageLimit     = 200
 	storeDiskMessageLimit = 50
 	storeDiskByteLimit    = 128 << 20
@@ -68,16 +70,18 @@ func (r *rawPayloads) UnmarshalJSON(data []byte) error {
 }
 
 type cacheSnapshot struct {
-	Version int          `json:"version"`
-	Rooms   []cachedRoom `json:"rooms"`
+	Version   int                  `json:"version"`
+	Rooms     []cachedRoom         `json:"rooms"`
+	Deletions map[string]time.Time `json:"deletions,omitempty"`
 }
 
 type Store struct {
-	mu     sync.RWMutex
-	path   string
-	rooms  map[string]cachedRoom
-	subs   map[chan Update]struct{}
-	closed bool
+	mu        sync.RWMutex
+	path      string
+	rooms     map[string]cachedRoom
+	deletions map[string]time.Time
+	subs      map[chan Update]struct{}
+	closed    bool
 }
 
 func NewStore(path string) (*Store, error) {
@@ -127,6 +131,15 @@ func NewStore(path string) (*Store, error) {
 	if closeErr != nil {
 		return nil, closeErr
 	}
+	if len(snapshot.Deletions) > storeDeletionLimit {
+		return nil, errCorruptCache
+	}
+	for id, cutoff := range snapshot.Deletions {
+		if !canonicalRoom.MatchString(id) || cutoff.IsZero() {
+			return nil, errCorruptCache
+		}
+	}
+	s.deletions = snapshot.Deletions
 	for _, entry := range snapshot.Rooms {
 		id := entry.Room.ID
 		_, duplicateRoom := s.rooms[id]
@@ -167,26 +180,35 @@ func (s *Store) commit(entry cachedRoom) error {
 		ordered := s.orderedRooms()
 		oldest = ordered[len(ordered)-1].Room.ID
 	}
-	if s.path != "" {
-		snapshot := cacheSnapshot{Version: 1, Rooms: s.orderedRooms()}
-		snapshot.Rooms = snapshot.Rooms[:min(len(snapshot.Rooms), storeRoomLimit)]
-		for i, item := range snapshot.Rooms {
-			item.Messages = item.Messages[max(0, len(item.Messages)-storeDiskMessageLimit):]
-			item.Raw = maps.Clone(item.Raw)
-			pruneRaw(&item)
-			snapshot.Rooms[i] = item
+	if err := s.save(); err != nil {
+		if existed {
+			s.rooms[id] = previous
+		} else {
+			delete(s.rooms, id)
 		}
-		if err := writeCache(s.path, snapshot); err != nil {
-			if existed {
-				s.rooms[id] = previous
-			} else {
-				delete(s.rooms, id)
-			}
-			return err
-		}
+		return err
 	}
 	delete(s.rooms, oldest)
 	return nil
+}
+
+// save writes a bounded snapshot while the caller holds the write lock.
+func (s *Store) save() error {
+	if s.path == "" {
+		return nil
+	}
+	snapshot := cacheSnapshot{Version: 1, Rooms: s.orderedRooms(), Deletions: s.deletions}
+	if snapshot.Rooms == nil {
+		snapshot.Rooms = []cachedRoom{}
+	}
+	snapshot.Rooms = snapshot.Rooms[:min(len(snapshot.Rooms), storeRoomLimit)]
+	for i, item := range snapshot.Rooms {
+		item.Messages = item.Messages[max(0, len(item.Messages)-storeDiskMessageLimit):]
+		item.Raw = maps.Clone(item.Raw)
+		pruneRaw(&item)
+		snapshot.Rooms[i] = item
+	}
+	return writeCache(s.path, snapshot)
 }
 
 func writeCache(path string, snapshot cacheSnapshot) (err error) {
@@ -247,7 +269,8 @@ func (s *Store) Rooms() []Room {
 		jid, err := types.ParseJID(entry.Room.ID)
 		if err != nil || !canonicalRoom.MatchString(entry.Room.ID) ||
 			entry.Meta.Archived || entry.Meta.Left ||
-			(len(entry.Messages) == 0 && !entry.Meta.Observed) {
+			s.roomDeleted(entry.Room.ID) ||
+			(len(entry.Messages) == 0 && entry.Room.LastActivityAt == "" && !entry.Meta.Observed) {
 			continue
 		}
 		room := cloneRoom(entry.Room)

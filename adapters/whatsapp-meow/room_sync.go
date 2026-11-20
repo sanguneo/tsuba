@@ -167,6 +167,9 @@ func (s *Store) hydrateJoinedGroups(ctx context.Context, groups []*types.GroupIn
 			continue
 		}
 		id := group.JID.String()
+		if s.roomDeleted(id) {
+			continue
+		}
 		entry, exists := s.rooms[id]
 		if !exists {
 			if len(s.rooms) >= storeRoomLimit {

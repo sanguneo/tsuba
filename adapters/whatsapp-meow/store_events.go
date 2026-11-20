@@ -105,6 +105,10 @@ func (s *Store) updateRoom(room Room, update func(*roomMeta)) error {
 		return &APIError{Code: "INVALID_REQUEST"}
 	}
 	entry := s.rooms[room.ID]
+	if cutoff := s.deletions[room.ID]; !cutoff.IsZero() &&
+		(s.roomDeleted(room.ID) || (room.LastActivityAt != "" && !parseStoreTime(room.LastActivityAt).After(cutoff))) {
+		return nil
+	}
 	if entry.Room.ID == "" || room.Kind != "" || update == nil {
 		room.Avatar = ""
 		mergeRoom(&entry, cloneRoom(room))
@@ -154,21 +158,20 @@ func (s *Store) Apply(evt *events.Message, live bool, self ...types.JID) error {
 	if mapped.room.ID == "" {
 		return nil
 	}
+	if mapped.message == nil {
+		content := evt.RawMessage
+		if content == nil {
+			content = evt.Message
+		}
+		content, wrappedEdit := unwrapTextMessage(content)
+		original := !evt.IsEdit && !wrappedEdit && evt.Info.Edit == types.EditAttributeEmpty &&
+			evt.Info.MsgBotInfo.EditType == "" && content.GetProtocolMessage() == nil && content.GetReactionMessage() == nil
+		return s.observeRoom(mapped.room, evt.Info.Timestamp, live && evt.Info.ID != "" && original)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return &APIError{Code: "INTERNAL"}
-	}
-	if mapped.message == nil {
-		entry := s.rooms[mapped.room.ID]
-		if entry.Meta.Observed {
-			return nil
-		}
-		if entry.Room.ID == "" {
-			entry.Room = mapped.room
-		}
-		entry.Meta.Observed = true
-		return s.commit(entry)
 	}
 	var push roomLabel
 	chat := evt.Info.Chat.ToNonAD()
@@ -179,6 +182,87 @@ func (s *Store) Apply(evt *events.Message, live bool, self ...types.JID) error {
 	// The mapper's room title may be a PushName. Keep it separate from
 	// conversation metadata so a later personal label can outrank it.
 	return s.put(*mapped.message, messageRoom{Room: defaultRoom(chat), Push: push}, live)
+}
+
+func (s *Store) observeRoom(room Room, at time.Time, live bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return &APIError{Code: "INTERNAL"}
+	}
+	if !canonicalRoom.MatchString(room.ID) {
+		return nil
+	}
+	if cutoff := s.deletions[room.ID]; !cutoff.IsZero() && (!live || !at.After(cutoff)) {
+		return nil
+	}
+	entry := s.rooms[room.ID]
+	if entry.Room.ID == "" {
+		entry.Room = room
+	}
+	if live && at.After(parseStoreTime(entry.Room.LastActivityAt)) {
+		entry.Room.LastActivityAt = formatStoreTime(at)
+	} else if entry.Meta.Observed {
+		return nil
+	}
+	entry.Meta.Observed = true
+	return s.commit(entry)
+}
+
+// roomDeleted is used under the room lock. The cutoff remains after reopening
+// so that a later replay cannot restore deleted messages to an active room.
+func (s *Store) roomDeleted(id string) bool {
+	cutoff := s.deletions[id]
+	return !cutoff.IsZero() && !parseStoreTime(s.rooms[id].Room.LastActivityAt).After(cutoff)
+}
+
+func (s *Store) deleteChat(id string, cutoff time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return &APIError{Code: "INTERNAL"}
+	}
+	if !canonicalRoom.MatchString(id) || cutoff.IsZero() || !cutoff.After(s.deletions[id]) {
+		return nil
+	}
+	previous, existed := s.rooms[id]
+	before := s.deletions
+	s.deletions = maps.Clone(before)
+	if s.deletions == nil {
+		s.deletions = make(map[string]time.Time)
+	}
+	s.deletions[id] = cutoff.UTC()
+	if len(s.deletions) > storeDeletionLimit {
+		oldest := id
+		for candidate, at := range s.deletions {
+			if order := at.Compare(s.deletions[oldest]); order < 0 || (order == 0 && candidate < oldest) {
+				oldest = candidate
+			}
+		}
+		delete(s.deletions, oldest)
+	}
+
+	entry := previous
+	entry.Messages = slices.DeleteFunc(slices.Clone(entry.Messages), func(msg Message) bool {
+		return !parseStoreTime(msg.SentAt).After(cutoff)
+	})
+	if len(entry.Messages) == 0 {
+		delete(s.rooms, id)
+	} else {
+		entry.Raw = maps.Clone(entry.Raw)
+		pruneRaw(&entry)
+		entry.Room.Unread = 0
+		setPreview(&entry.Room, entry.Messages[len(entry.Messages)-1])
+		s.rooms[id] = entry
+	}
+	if err := s.save(); err != nil {
+		s.deletions = before
+		if existed {
+			s.rooms[id] = previous
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Put(msg Message, live bool) error {
@@ -208,6 +292,9 @@ func validStoredMessage(msg Message) bool {
 func (s *Store) put(msg Message, room messageRoom, live bool) error {
 	if !validStoredMessage(msg) {
 		return &APIError{Code: "INVALID_REQUEST"}
+	}
+	if cutoff := s.deletions[msg.RoomID]; !cutoff.IsZero() && !parseStoreTime(msg.SentAt).After(cutoff) {
+		return nil
 	}
 	entry := s.rooms[msg.RoomID]
 	before := entry.Meta

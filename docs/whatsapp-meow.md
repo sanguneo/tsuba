@@ -118,8 +118,10 @@ lane reports its PR ready.
 ## Supported behavior and gaps
 
 The room list is partial (`complete: false`), capped at 500, and excludes
-archived rooms, groups the account has left, and history-only empty ordinary
-conversations. Observed participating groups and recognized bot rooms can stay
+archived rooms, groups the account has left, and address-book-only rows without
+messages or conversation activity. Active rooms remain visible when their
+messages are not readable yet, including current and legacy Meta AI addresses.
+Observed participating groups and recognized bot rooms can stay
 visible without a displayable message. There is no arbitrary age cutoff. Names
 come from synchronized contacts, sender push names, group titles, and bot
 metadata. On connection, retained rooms also recover contact/archive metadata
@@ -135,6 +137,12 @@ Lists have an eight-second budget, SDK lookups three seconds, and downloads
 five seconds with a 256 KiB JPEG/PNG/WebP limit. Download URLs must use an
 allowlisted WhatsApp HTTPS photo host, without redirects or explicit ports.
 Snapshots and their IDs are memory-only and are resolved again after restart.
+Observed chat deletions purge the covered message window and its raw payloads.
+At most 500 deletion cutoffs persist across restarts, preventing older history
+or group snapshots from resurrecting deleted content. Genuinely newer incoming
+activity can reopen a chat. Deletions already consumed before this adapter
+started recording them are not recoverable from the SDK's local chat settings
+alone.
 
 Cached history supports `before-id` with a maximum page size of 100. Memory
 retains 200 messages per room and restart history retains the latest 50.
@@ -150,7 +158,7 @@ keys are accepted only when they identify this device's own account. Bot sender
 labels use the known chat/contact/verified/push-name metadata on reads and live
 events, so a newly synchronized label also applies to cached messages.
 
-Received images, videos, audio (including voice notes), documents, and
+Received images, videos (including video notes), audio (including voice notes), documents, and
 stickers appear as attachments downloadable through `/media`. View-once
 media is not exposed. Uploads accept up to 64,000,000 bytes per file and
 1,024 Unicode code points per caption. JPEG and PNG up to 16,000,000 bytes

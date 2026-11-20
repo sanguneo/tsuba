@@ -41,9 +41,7 @@ func (l *link) handle(ctx context.Context, event any) {
 		err = l.history(e)
 	case *events.UndecryptableMessage:
 		if chat := e.Info.Chat.ToNonAD(); chat.IsBot() {
-			err = l.store.updateRoom(Room{ID: chat.String()}, func(meta *roomMeta) {
-				meta.Observed = true
-			})
+			err = l.store.observeRoom(defaultRoom(chat), e.Info.Timestamp, e.Info.ID != "")
 		}
 	case *events.JoinedGroup:
 		err = l.store.updateRoom(Room{ID: e.JID.String()}, func(meta *roomMeta) {
@@ -116,6 +114,15 @@ func (l *link) handle(ctx context.Context, event any) {
 				}
 			})
 		}
+	case *events.DeleteChat:
+		cutoff := e.Timestamp
+		rangeInfo := e.Action.GetMessageRange()
+		if seconds := max(rangeInfo.GetLastMessageTimestamp(), rangeInfo.GetLastSystemMessageTimestamp()); seconds > 0 {
+			if at := time.Unix(seconds, 0); at.After(cutoff) {
+				cutoff = at
+			}
+		}
+		err = l.store.deleteChat(e.JID.ToNonAD().String(), cutoff)
 	case *events.Receipt:
 		status := ""
 		switch e.Type {
@@ -216,7 +223,7 @@ func (l *link) history(event *events.HistorySync) error {
 			ID: jid.String(), Title: name,
 			Kind: kind, Unread: int(conversation.GetUnreadCount()),
 		}
-		if at := conversation.GetConversationTimestamp(); at > 0 {
+		if at := max(conversation.GetConversationTimestamp(), conversation.GetLastMsgTimestamp()); at > 0 && at <= 253402300799 {
 			room.LastActivityAt = time.Unix(int64(at), 0).UTC().Format(time.RFC3339)
 		}
 		if err = l.store.updateRoom(room, func(meta *roomMeta) {
