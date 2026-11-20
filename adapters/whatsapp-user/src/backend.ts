@@ -12,6 +12,7 @@ import {
   messageAttachment,
 } from "./mapping";
 import { type AvatarOptions, RoomAvatars } from "./room-avatars";
+import { sendError } from "./send-error";
 import type { WaLink } from "./session";
 import { WaStore } from "./store";
 import { applyStoreEvent } from "./store-events";
@@ -21,49 +22,6 @@ function roomJid(value: string): string {
   if (!isRoomJid(value))
     throw new AdapterError("NOT_FOUND", "No such WhatsApp chat");
   return value;
-}
-
-function statusCode(error: unknown): number | undefined {
-  const output =
-    error && typeof error === "object" && "output" in error
-      ? error.output
-      : undefined;
-  const code =
-    output && typeof output === "object" && "statusCode" in output
-      ? output.statusCode
-      : undefined;
-  return typeof code === "number" ? code : undefined;
-}
-
-function sendError(error: unknown): AdapterError {
-  if (error instanceof AdapterError) return error;
-  switch (statusCode(error)) {
-    case 401:
-      return new AdapterError(
-        "REAUTH_REQUIRED",
-        "WhatsApp no longer accepts this linked device; run login again",
-      );
-    case 403:
-      return new AdapterError(
-        "FORBIDDEN",
-        "WhatsApp does not let this account do that",
-      );
-    case 404:
-      return new AdapterError(
-        "NOT_FOUND",
-        "WhatsApp could not find the recipient or its encryption keys",
-      );
-    case 429:
-      return new AdapterError(
-        "RATE_LIMITED",
-        "WhatsApp asked the adapter to slow down; try again later",
-      );
-    default:
-      return new AdapterError(
-        "INTERNAL",
-        "The WhatsApp adapter failed; a write's outcome is unknown",
-      );
-  }
 }
 
 /**
@@ -155,12 +113,6 @@ export function whatsappUserBackend(
     replyTo: string | undefined,
     submit: (quoted?: WaMessageLike) => Promise<WaMessageLike | undefined>,
   ): Promise<Message> {
-    roomJid(roomId);
-    if (isBotJid(roomId))
-      throw new AdapterError(
-        "NOT_SUPPORTED",
-        "WhatsApp bot chats are read-only",
-      );
     requireOpen();
     const quoted =
       replyTo === undefined ? undefined : store.find(roomId, replyTo);
@@ -188,7 +140,19 @@ export function whatsappUserBackend(
   return {
     async listRooms() {
       requireLogin();
-      const rooms = store.rooms();
+      const rooms = await Promise.all(
+        store.rooms().map(async (room) => {
+          if (!isBotJid(room.id) || !(await link.canSendDirectBotText(room.id)))
+            return room;
+          return {
+            ...room,
+            features: {
+              "messages.reply": false,
+              "attachments.send": false,
+            } as const,
+          };
+        }),
+      );
       return {
         rooms:
           link.state() === "open"
@@ -237,9 +201,26 @@ export function whatsappUserBackend(
       };
     },
     send(roomId, text, { replyTo }) {
+      roomJid(roomId);
+      if (isBotJid(roomId)) {
+        if (replyTo !== undefined)
+          throw new AdapterError(
+            "NOT_SUPPORTED",
+            "WhatsApp bot chats do not support replies",
+          );
+        return send(roomId, undefined, () =>
+          link.sendDirectBotText(roomId, text),
+        );
+      }
       return send(roomId, replyTo, (quoted) => link.send(roomId, text, quoted));
     },
     upload(roomId, file, { caption, replyTo }) {
+      roomJid(roomId);
+      if (isBotJid(roomId))
+        throw new AdapterError(
+          "NOT_SUPPORTED",
+          "WhatsApp bot chats do not support uploads",
+        );
       return send(roomId, replyTo, (quoted) =>
         link.sendMedia(roomId, file, caption, quoted),
       );

@@ -19,6 +19,8 @@ export function reconnectDelay(attempt: number): number {
 }
 
 export interface WaLink {
+  canSendDirectBotText: WaSocket["canSendDirectBotText"];
+  sendDirectBotText: WaSocket["sendDirectBotText"];
   profilePictureUrl(jid: string): Promise<string | undefined>;
   downloadMedia: WaSocket["downloadMedia"];
   sendMedia: WaSocket["sendMedia"];
@@ -122,6 +124,19 @@ export function connectWhatsApp({ open, schedule }: SessionOptions): WaLink {
 
   return {
     state: () => state,
+    async canSendDirectBotText(jid) {
+      return state === "open" && socket
+        ? socket.canSendDirectBotText(jid)
+        : false;
+    },
+    async sendDirectBotText(jid, text) {
+      if (state !== "open" || !socket)
+        throw new AdapterError(
+          "BUSY",
+          "WhatsApp is not connected yet; nothing was sent",
+        );
+      return socket.sendDirectBotText(jid, text);
+    },
     async profilePictureUrl(jid) {
       if (state !== "open" || !socket) return undefined;
       return socket.profilePictureUrl(jid);

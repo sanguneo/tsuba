@@ -120,6 +120,11 @@ JSON 응답은 모두 봉투입니다: `{"ok": true, …}` 또는
 `"features": {"messages.send": false}` 를 가지고, 클라이언트는 그 방에 입력창을 그리지
 않습니다.
 
+같은 방의 제한도 바뀔 수 있습니다. 예를 들어 WhatsApp의 Muse 방은 연결된 기기가
+발송에 필요한 키를 갖고 있을 때만 `messages.send`를 허용합니다. 클라이언트는
+`/rooms`를 다시 읽을 때 최신 제한을 반영해야 합니다. 입력창이 열려 있었더라도
+제출 전에 키가 사라지면 `/send`는 `501 NOT_SUPPORTED`로 거절할 수 있습니다.
+
 ## 라우트 규칙
 
 - 읽기는 명사에 `GET`(`/rooms`, `/messages`, `/media`, 예약 `/thread`), 쓰기는 동사에

@@ -7,6 +7,15 @@ import type {
   WaState,
 } from "../adapters/whatsapp-user/src/types";
 
+export const directBotUnsupported = {
+  async canSendDirectBotText() {
+    return false;
+  },
+  async sendDirectBotText() {
+    throw new Error("Unexpected direct bot send");
+  },
+};
+
 export const ROOM = "100000000001@s.whatsapp.net";
 export const GROUP = "100000000002-1700000000@g.us";
 export const SECONDS = 1_767_225_600;
@@ -36,6 +45,7 @@ export function fakeLink(initial: WaState = "open") {
     sends: typeof sends;
     sendImpl: (jid: string, text: string) => Promise<WaMessageLike | undefined>;
   } = {
+    ...directBotUnsupported,
     profilePictureUrl: async () => undefined,
     sendMedia: async () => {
       throw new Error("Unexpected upload");
@@ -80,6 +90,7 @@ export function socketFactory() {
     open() {
       let handler: (event: WaSocketEvent) => void = () => {};
       const socket = {
+        ...directBotUnsupported,
         profilePictureUrl: async () => undefined,
         closed: false,
         emit: (event: WaSocketEvent) => handler(event),

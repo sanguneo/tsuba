@@ -13,6 +13,7 @@ import {
 import { openBaileys } from "../adapters/whatsapp-user/src/baileys";
 import { bounded, deferred } from "./harness/barriers";
 import { fakeAuthState } from "./whatsapp-user-baileys-harness";
+import { directBotUnsupported } from "./whatsapp-user-fixtures";
 
 test("pairing requests desktop full sync and reconnect keeps a compatible web payload", async () => {
   const authDir = await mkdtemp(join(tmpdir(), "tsuba-wa-payload-"));
@@ -27,6 +28,7 @@ test("pairing requests desktop full sync and reconnect keeps a compatible web pa
     makeSocket(config) {
       captured.resolve(config);
       return {
+        ...directBotUnsupported,
         ws: new EventEmitter(),
         authState: fakeAuthState(config),
         ev: { on() {} },

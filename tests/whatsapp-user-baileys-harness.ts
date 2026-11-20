@@ -16,7 +16,7 @@ import {
 } from "../adapters/whatsapp-user/src/baileys";
 import type { WaSocketEvent } from "../adapters/whatsapp-user/src/types";
 import { bounded, deferred } from "./harness/barriers";
-import { ROOM } from "./whatsapp-user-fixtures";
+import { directBotUnsupported, ROOM } from "./whatsapp-user-fixtures";
 
 export function fakeAuthState(
   config: Parameters<NonNullable<BaileysOptions["makeSocket"]>>[0],
@@ -51,8 +51,14 @@ export async function setup(
   const made =
     deferred<Parameters<NonNullable<BaileysOptions["makeSocket"]>>[0]>();
   const ending = deferred<void>();
+  const directBot: Pick<
+    BaileysLike,
+    "canSendDirectBotText" | "sendDirectBotText"
+  > = { ...directBotUnsupported };
   const socket: BaileysLike = {
     ws,
+    canSendDirectBotText: (jid) => directBot.canSendDirectBotText(jid),
+    sendDirectBotText: (jid, body) => directBot.sendDirectBotText(jid, body),
     get authState() {
       if (!authState) throw new Error("Socket not created");
       return authState;
@@ -115,6 +121,7 @@ export async function setup(
     calls,
     pictures,
     authDir,
+    directBot,
     authKeys: socket.authState.keys,
     ending: ending.promise,
     config: () => config,
