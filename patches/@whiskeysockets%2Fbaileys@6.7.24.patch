@@ -34,3 +34,295 @@ diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
  };
  export function extensionForMediaMessage(message) {
      const getExtension = (mimetype) => mimetype.split(';')[0]?.split('/')[1];
+diff --git a/lib/Utils/direct-bot.js b/lib/Utils/direct-bot.js
+new file mode 100644
+--- /dev/null
++++ b/lib/Utils/direct-bot.js
+@@ -0,0 +1,92 @@
++import { proto } from '../../WAProto/index.js';
++import { aesDecryptGCM, hkdf } from './crypto.js';
++import { unpadRandomMax16 } from './generics.js';
++
++// Unlike areJidsSameUser, this comparison keeps the PN and LID namespaces separate.
++const identity = /^(\d+)(?::\d+)?@(s\.whatsapp\.net|lid)$/;
++function ownAddress(jid, me) {
++    const parsed = identity.exec(jid);
++    if (!parsed) return;
++    const self = identity.exec(parsed[2] === 'lid' ? me.lid : me.id);
++    if (self && self[1] === parsed[1] && self[2] === parsed[2]) {
++        return `${parsed[1]}@${parsed[2]}`;
++    }
++}
++
++export const hasBotAddress = ({ attrs }) => [attrs.from, attrs.recipient].some(jid => jid?.endsWith('@bot'));
++export const hasBotCiphertext = stanza => Array.isArray(stanza.content) &&
++    stanza.content.some(child => child.tag === 'enc' && child.attrs.type === 'msmsg');
++export function directBotAddress(stanza, me) {
++    const { from, recipient, participant, id } = stanza.attrs;
++    if (stanza.tag !== 'message' || !id || participant !== undefined ||
++        stanza.attrs.target_chat_jid !== undefined ||
++        (Array.isArray(stanza.content) && stanza.content.some(child => child.attrs.target_chat_jid !== undefined))) return;
++    if (recipient === undefined && /^\d+@bot$/.test(from)) return from;
++    if (/^\d+@bot$/.test(recipient) && ownAddress(from, me)) return recipient;
++}
++
++// One outcome per stanza: never merge an unchecked plaintext/second envelope into a reply.
++export async function receiveDirectBot(stanza, me, { repository, hooks }) {
++    const children = Array.isArray(stanza.content) ? stanza.content : [];
++    const envelopes = children.filter(child => ['enc', 'plaintext', 'unavailable'].includes(child.tag));
++    const enc = envelopes[0];
++    if (envelopes.length !== 1 || enc.tag !== 'enc' || !(enc.content instanceof Uint8Array) ||
++        (enc.attrs.v !== undefined && enc.attrs.v !== '2')) return 'unsupported-envelope';
++    const { from, recipient, id } = stanza.attrs;
++    if (recipient !== undefined) {
++        if (!['msg', 'pkmsg'].includes(enc.attrs.type)) return 'unsupported-envelope';
++        try {
++            const bytes = await repository.decryptMessage({ jid: from, type: enc.attrs.type, ciphertext: enc.content });
++            const copy = proto.Message.decode(unpadRandomMax16(bytes)).deviceSentMessage;
++            return copy?.destinationJid === recipient && copy.message ? copy.message : 'invalid-target';
++        } catch {
++            return 'invalid-payload';
++        }
++    }
++    if (enc.attrs.type !== 'msmsg') return 'unsupported-envelope';
++    const metas = children.filter(child => child.tag === 'meta');
++    const edits = children.filter(child => child.tag === 'bot');
++    if (metas.length !== 1 || edits.length > 1) return 'invalid-target';
++    const { target_id, target_sender_jid } = metas[0].attrs;
++    const sender = ownAddress(target_sender_jid ?? me.lid, me);
++    if (!target_id || !sender) return 'invalid-target';
++    const { edit, edit_target_id } = edits[0]?.attrs ?? {};
++    if (edit !== undefined && !['first', 'inner', 'last', 'full'].includes(edit)) return 'unsupported-envelope';
++    let envelope;
++    try {
++        envelope = proto.MessageSecretMessage.decode(enc.content);
++    } catch {
++        return 'invalid-payload';
++    }
++    if (envelope.version != null && envelope.version !== 0) return 'unsupported-envelope';
++    const { encIv, encPayload } = envelope;
++    if (encIv?.length !== 12 || !encPayload || encPayload.length <= 16) return 'invalid-payload';
++    let prompt;
++    try {
++        prompt = await hooks?.getMessage?.({ remoteJid: from, fromMe: true, id: target_id });
++    } catch {
++        return 'lookup-failed';
++    }
++    const secret = prompt?.messageContextInfo?.messageSecret;
++    if (!(secret instanceof Uint8Array) || secret.length !== 32) return 'missing-secret';
++    const botSecret = await hkdf(secret, 32, { info: 'Bot Message' });
++    const ids = ['inner', 'last'].includes(edit) && edit_target_id && edit_target_id !== id ? [edit_target_id, id] : [id];
++    for (const candidate of ids) {
++        const key = await hkdf(botSecret, 32, { info: `${candidate}${sender}${from}` });
++        let plaintext;
++        try {
++            plaintext = aesDecryptGCM(encPayload, key, encIv, Buffer.from(`${candidate}\0${from}`));
++        } catch {
++            continue;
++        }
++        try {
++            const message = proto.Message.decode(plaintext);
++            if (!Object.keys(message).length || message.deviceSentMessage || message.secretEncryptedMessage ||
++                message.protocolMessage || message.senderKeyDistributionMessage) return 'unsupported-envelope';
++            return message;
++        } catch {
++            return 'invalid-payload';
++        }
++    }
++    return 'authentication-failed';
++}
+diff --git a/lib/Utils/decode-wa-message.js b/lib/Utils/decode-wa-message.js
+--- a/lib/Utils/decode-wa-message.js
++++ b/lib/Utils/decode-wa-message.js
+@@ -2,6 +2,7 @@
+ import { proto } from '../../WAProto/index.js';
+ import { areJidsSameUser, isJidBroadcast, isJidGroup, isJidMetaIa, isJidNewsletter, isJidStatusBroadcast, isJidUser, isLidUser } from '../WABinary/index.js';
+ import { unpadRandomMax16 } from './generics.js';
++import { directBotAddress, hasBotAddress, hasBotCiphertext, receiveDirectBot } from './direct-bot.js';
+ export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node';
+ export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled';
+ export const NACK_REASONS = {
+@@ -33,7 +34,14 @@
+     const recipient = stanza.attrs.recipient;
+     const isMe = (jid) => areJidsSameUser(jid, meId);
+     const isMeLid = (jid) => areJidsSameUser(jid, meLid);
+-    if (isJidUser(from) || isLidUser(from)) {
++    const botTraffic = hasBotAddress(stanza);
++    if (botTraffic) {
++        chatId = directBotAddress(stanza, { id: meId, lid: meLid });
++        if (!chatId) throw new Boom('Invalid direct bot address');
++        msgType = 'chat';
++        author = from;
++    }
++    else if (isJidUser(from) || isLidUser(from)) {
+         if (recipient && !isJidMetaIa(recipient)) {
+             if (!isMe(from) && !isMeLid(from)) {
+                 throw new Boom('receipient present, but msg not from me', { data: stanza });
+@@ -81,7 +89,7 @@
+     // sync, app-state sync, etc.) when `from` and our stored identity are in
+     // different formats, leaving fromMe wrongly false.
+     const senderJid = (stanza.attrs.participant || stanza.attrs.from);
+-    const fromMe = isMe(senderJid) || isMeLid(senderJid);
++    const fromMe = botTraffic ? recipient !== undefined : isMe(senderJid) || isMeLid(senderJid);
+     const pushname = stanza?.attrs?.notify;
+     const key = {
+         remoteJid: chatId,
+@@ -109,13 +117,32 @@
+         sender: msgType === 'chat' ? author : chatId
+     };
+ }
+-export const decryptMessageNode = (stanza, meId, meLid, repository, logger) => {
++export const decryptMessageNode = (stanza, meId, meLid, repository, logger, hooks) => {
+     const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid);
+     return {
+         fullMessage,
+         category: stanza.attrs.category,
+         author,
+         async decrypt() {
++            if (hasBotAddress(stanza)) {
++                const result = await receiveDirectBot(stanza, { id: meId, lid: meLid }, { repository, hooks });
++                if (typeof result !== 'string') {
++                    fullMessage.message = result;
++                    return;
++                }
++                fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT;
++                fullMessage.messageStubParameters = [result];
++                hooks?.onBotReceiveDiagnostic?.(result);
++                if (result === 'missing-secret' || result === 'lookup-failed') {
++                    hooks?.onBotCiphertextRoom?.(stanza.attrs.from);
++                }
++                return;
++            }
++            if (hasBotCiphertext(stanza)) {
++                fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT;
++                fullMessage.messageStubParameters = ['unsupported-envelope'];
++                return;
++            }
+             let decryptables = 0;
+             if (Array.isArray(stanza.content)) {
+                 for (const { tag, attrs, content } of stanza.content) {
+@@ -196,4 +223,4 @@
+         }
+     };
+ };
+-//# sourceMappingURL=decode-wa-message.js.map
+\ No newline at end of file
++//# sourceMappingURL=decode-wa-message.js.map
+diff --git a/lib/Utils/decode-wa-message.d.ts b/lib/Utils/decode-wa-message.d.ts
+--- a/lib/Utils/decode-wa-message.d.ts
++++ b/lib/Utils/decode-wa-message.d.ts
+@@ -1,4 +1,4 @@
+-import type { SignalRepository, WAMessage } from '../Types/index.js';
++import type { SignalRepository, SocketConfig, WAMessage } from '../Types/index.js';
+ import { type BinaryNode } from '../WABinary/index.js';
+ import type { ILogger } from './logger.js';
+ export declare const NO_MESSAGE_FOUND_ERROR_TEXT = "Message absent from node";
+@@ -27,10 +27,10 @@
+     author: string;
+     sender: string;
+ };
+-export declare const decryptMessageNode: (stanza: BinaryNode, meId: string, meLid: string, repository: SignalRepository, logger: ILogger) => {
++export declare const decryptMessageNode: (stanza: BinaryNode, meId: string, meLid: string, repository: SignalRepository, logger: ILogger, hooks?: Partial<Pick<SocketConfig, 'getMessage' | 'onBotReceiveDiagnostic' | 'onBotCiphertextRoom'>>) => {
+     fullMessage: WAMessage;
+     category: string | undefined;
+     author: string;
+     decrypt(): Promise<void>;
+ };
+-//# sourceMappingURL=decode-wa-message.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=decode-wa-message.d.ts.map
+diff --git a/lib/Socket/messages-recv.js b/lib/Socket/messages-recv.js
+--- a/lib/Socket/messages-recv.js
++++ b/lib/Socket/messages-recv.js
+@@ -7,6 +7,7 @@
+ import { WAMessageStatus, WAMessageStubType } from '../Types/index.js';
+ import { aesDecryptCTR, aesEncryptGCM, cleanMessage, Curve, decodeMediaRetryNode, decodeMessageNode, decryptMessageNode, delay, derivePairingCodeKey, encodeBigEndian, encodeSignedDeviceIdentity, getCallStatusFromNode, getHistoryMsg, getNextPreKeys, getStatusFromReceiptType, hkdf, MISSING_KEYS_ERROR_TEXT, NACK_REASONS, NO_MESSAGE_FOUND_ERROR_TEXT, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils/index.js';
+ import { makeMutex } from '../Utils/make-mutex.js';
++import { directBotAddress, hasBotAddress, hasBotCiphertext } from '../Utils/direct-bot.js';
+ import { areJidsSameUser, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildBuffer, getBinaryNodeChildren, getBinaryNodeChildString, isJidGroup, isJidStatusBroadcast, isJidUser, isLidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary/index.js';
+ import { extractGroupMetadata } from './groups.js';
+ import { makeMessagesSocket } from './messages-send.js';
+@@ -57,7 +58,7 @@
+         if (tag === 'message' && getBinaryNodeChild({ tag, attrs, content }, 'unavailable')) {
+             stanza.attrs.from = authState.creds.me.id;
+         }
+-        logger.debug({ recv: { tag, attrs }, sent: stanza.attrs }, 'sent ack');
++        if (!hasBotAddress({ attrs })) logger.debug({ recv: { tag, attrs }, sent: stanza.attrs }, 'sent ack');
+         await sendNode(stanza);
+     };
+     const rejectCall = async (callId, callFrom) => {
+@@ -614,14 +615,18 @@
+             return;
+         }
+         const encNode = getBinaryNodeChild(node, 'enc');
+-        // TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
+-        if (encNode && encNode.attrs.type === 'msmsg') {
+-            logger.debug({ key: node.attrs.key }, 'ignored msmsg');
++        const botTraffic = hasBotAddress(node);
++        if (botTraffic && !directBotAddress(node, authState.creds.me)) {
++            config.onBotReceiveDiagnostic?.('invalid-target');
++            await sendMessageAck(node, NACK_REASONS.MissingMessageSecret);
++            return;
++        }
++        if (!botTraffic && hasBotCiphertext(node)) {
+             await sendMessageAck(node);
+             return;
+         }
+         let response;
+-        if (getBinaryNodeChild(node, 'unavailable') && !encNode) {
++        if (!botTraffic && getBinaryNodeChild(node, 'unavailable') && !encNode) {
+             await sendMessageAck(node);
+             const { key } = decodeMessageNode(node, authState.creds.me.id, authState.creds.me.lid || '').fullMessage;
+             response = await requestPlaceholderResend(key);
+@@ -635,7 +640,7 @@
+                 placeholderResendCache.del(node.attrs.id);
+             }
+         }
+-        const { fullMessage: msg, category, author, decrypt } = decryptMessageNode(node, authState.creds.me.id, authState.creds.me.lid || '', signalRepository, logger);
++        const { fullMessage: msg, category, author, decrypt } = decryptMessageNode(node, authState.creds.me.id, authState.creds.me.lid || '', signalRepository, logger, config);
+         if (response && msg?.messageStubParameters?.[0] === NO_MESSAGE_FOUND_ERROR_TEXT) {
+             msg.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT, response];
+         }
+@@ -649,6 +654,7 @@
+                     await decrypt();
+                     // message failed to decrypt
+                     if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
++                        if (botTraffic) return sendMessageAck(node, NACK_REASONS.MissingMessageSecret);
+                         if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
+                             return sendMessageAck(node, NACK_REASONS.ParsingError);
+                         }
+@@ -701,7 +707,8 @@
+             ]);
+         }
+         catch (error) {
+-            logger.error({ error, node }, 'error in handling message');
++            if (botTraffic) logger.error('error handling direct bot message');
++            else logger.error({ error, node }, 'error in handling message');
+         }
+     };
+     const fetchMessageHistory = async (count, oldestMsgKey, oldestMsgTimestamp) => {
+@@ -1080,4 +1087,4 @@
+         requestPlaceholderResend
+     };
+ };
+-//# sourceMappingURL=messages-recv.js.map
+\ No newline at end of file
++//# sourceMappingURL=messages-recv.js.map
+diff --git a/lib/Types/Socket.d.ts b/lib/Types/Socket.d.ts
+--- a/lib/Types/Socket.d.ts
++++ b/lib/Types/Socket.d.ts
+@@ -115,8 +115,12 @@
+      * (solves the "this message can take a while" issue) can be retried
+      * */
+     getMessage: (key: proto.IMessageKey) => Promise<proto.IMessage | undefined>;
++    /** Redacted direct bot receive classification. Never includes a message key or payload. */
++    onBotReceiveDiagnostic?: (reason: 'missing-secret' | 'authentication-failed' | 'unsupported-envelope' | 'invalid-target' | 'invalid-payload' | 'lookup-failed') => void;
++    /** Private read-only room observation, not a message or log event. */
++    onBotCiphertextRoom?: (remoteJid: string) => void;
+     /** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
+     cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>;
+     makeSignalRepository: (auth: SignalAuthState) => SignalRepository;
+ };
+-//# sourceMappingURL=Socket.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=Socket.d.ts.map

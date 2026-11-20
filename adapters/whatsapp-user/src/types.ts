@@ -4,6 +4,7 @@
  * accepted as is and tests can build messages without importing Baileys.
  */
 export interface WaKey {
+  readonly isViewOnce?: boolean;
   remoteJid?: string | null;
   fromMe?: boolean | null;
   id?: string | null;
@@ -41,6 +42,9 @@ export interface WaWrapper {
 }
 
 export interface WaContent {
+  readonly messageContextInfo?: {
+    readonly messageSecret?: Uint8Array | null;
+  } | null;
   conversation?: string | null;
   extendedTextMessage?: {
     text?: string | null;
@@ -106,6 +110,16 @@ export interface WaGroup {
   readonly subject?: string;
 }
 
+export type WaBotDiagnostic =
+  | "msmsg-seen"
+  | "wasa-envelope"
+  | "missing-secret"
+  | "authentication-failed"
+  | "unsupported-envelope"
+  | "invalid-target"
+  | "invalid-payload"
+  | "lookup-failed";
+
 /** What the socket reports about the chat and message state. */
 export type WaDataEvent =
   | { type: "chats"; chats: WaChat[] }
@@ -117,6 +131,7 @@ export type WaDataEvent =
   | { type: "groupSyncComplete"; count: number }
   /** Optional group metadata failed; no account data or SDK error is exposed. */
   | { type: "groupSyncFailed" }
+  | { type: "botDiagnostic"; reason: WaBotDiagnostic }
   | { type: "chatsDeleted"; ids: string[] }
   /** `live` is a message that arrived while connected; history is not streamed. */
   | { type: "messages"; messages: WaMessageLike[]; live: boolean }

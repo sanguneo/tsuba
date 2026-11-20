@@ -1,10 +1,13 @@
 import type { Message, Room } from "@tsuba/serve-kit";
 import { proto } from "@whiskeysockets/baileys";
+import { BotPrompts } from "./bot-prompts";
 import {
+  isBotJid,
   isRoomJid,
   jidUser,
   mapMessage,
   mapRoom,
+  personalJid,
   shown,
   toSeconds,
 } from "./mapping";
@@ -28,12 +31,6 @@ interface Entry {
   editedAt: number | null;
 }
 
-function personalJid(jid: string): string | undefined {
-  return isRoomJid(jid) && !jid.endsWith("@g.us")
-    ? jid.replace(/:\d+@/, "@")
-    : undefined;
-}
-
 function phoneJid(jid: string): boolean {
   return /^\d+@s\.whatsapp\.net$/.test(jid);
 }
@@ -43,6 +40,7 @@ function phoneJid(jid: string): boolean {
  * cache from earlier runs. WhatsApp cannot fetch a room's older history.
  */
 export class WaStore {
+  private readonly botPrompts: BotPrompts;
   private readonly chats = new Map<string, Omit<WaChat, "id">>();
   private readonly names = new Map<
     string,
@@ -63,6 +61,7 @@ export class WaStore {
   >();
 
   constructor(snapshot?: StoreSnapshot) {
+    this.botPrompts = new BotPrompts(snapshot?.botPrompts);
     if (!snapshot) return;
     for (const { key, status } of snapshot.receipts ?? [])
       this.receipt(key, { status });
@@ -75,7 +74,8 @@ export class WaStore {
       })),
     );
     for (const { id, linked } of snapshot.aliases)
-      this.aliases.set(id, new Set(linked));
+      if (personalJid(id))
+        this.aliases.set(id, new Set(linked.filter(personalJid)));
     this.setGroups(snapshot.subjects);
     for (const { data, editedAt } of snapshot.messages) {
       const raw = proto.WebMessageInfo.decode(Buffer.from(data, "base64"));
@@ -89,8 +89,10 @@ export class WaStore {
   }
 
   snapshot(): StoreSnapshot {
+    const botPrompts = this.botPrompts.snapshot();
     return {
       version: 1,
+      ...(botPrompts.length > 0 && { botPrompts }),
       receipts: [...this.pendingReceipts.values()],
       chats: [...this.chats].map(([id, chat]) => ({
         id,
@@ -145,9 +147,9 @@ export class WaStore {
 
   setNames(names: WaContact[]): void {
     for (const contact of names) {
-      const id = personalJid(contact.id);
+      const id = isBotJid(contact.id) ? contact.id : personalJid(contact.id);
       if (!id) continue;
-      this.linkAliases([id, contact.lid, contact.jid]);
+      if (!isBotJid(id)) this.linkAliases([id, contact.lid, contact.jid]);
       const known = this.names.get(id);
       this.names.set(id, {
         name: contact.name?.trim() || known?.name,
@@ -167,6 +169,7 @@ export class WaStore {
 
   deleteChats(ids: string[]): void {
     for (const id of ids) {
+      this.botPrompts.deleteChat(id);
       this.chats.delete(id);
       this.messages.delete(id);
       for (const [receiptId, receipt] of this.pendingReceipts)
@@ -179,7 +182,15 @@ export class WaStore {
   put(raw: WaMessageLike): Message | null {
     const roomId = raw.key.remoteJid;
     const id = raw.key.id;
-    if (roomId && isRoomJid(roomId) && !raw.key.fromMe) {
+    if (isBotJid(roomId)) {
+      this.setChats([{ id: roomId }]);
+      this.botPrompts.put(raw);
+      if (raw.key.fromMe === false) {
+        this.setPushName(roomId, raw.pushName, toSeconds(raw.messageTimestamp));
+        if (raw.verifiedBizName?.trim())
+          this.setNames([{ id: roomId, verifiedName: raw.verifiedBizName }]);
+      }
+    } else if (roomId && isRoomJid(roomId) && !raw.key.fromMe) {
       const direct = personalJid(roomId);
       // These Baileys key fields describe the sender, not the recipient.
       const sender = direct ?? personalJid(raw.key.participant ?? "");
@@ -261,7 +272,9 @@ export class WaStore {
 
   remove(keys: WaKey[]): { roomId: string; id: string }[] {
     const removed: { roomId: string; id: string }[] = [];
-    for (const { remoteJid, id } of keys) {
+    for (const key of keys) {
+      const { remoteJid, id } = key;
+      this.botPrompts.delete(key);
       this.pendingReceipts.delete(JSON.stringify([remoteJid, id]));
       if (remoteJid && id && this.messages.get(remoteJid)?.delete(id))
         removed.push({ roomId: remoteJid, id });
@@ -273,6 +286,14 @@ export class WaStore {
     return this.messages.get(roomId)?.get(id)?.raw;
   }
 
+  findOutbound(roomId: string, id: string): WaMessageLike | undefined {
+    if (!isBotJid(roomId)) return this.find(roomId, id);
+    const message = this.botPrompts.find(roomId, id);
+    return message
+      ? { key: { remoteJid: roomId, id, fromMe: true }, message }
+      : undefined;
+  }
+
   rooms(): Room[] {
     const ids = new Set([...this.chats.keys(), ...this.messages.keys()]);
     const rooms = [...ids].map((id) => {
@@ -280,7 +301,9 @@ export class WaStore {
       const newest = this.page(id, 1).messages[0];
       const name = id.endsWith("@g.us")
         ? this.subjects.get(id) || chat.name
-        : this.personalName(id, chat.name);
+        : isBotJid(id)
+          ? this.botName(id, chat.name)
+          : this.personalName(id, chat.name);
       return mapRoom(id, { ...chat, name: name ?? null }, newest);
     });
     rooms.sort(
@@ -320,11 +343,24 @@ export class WaStore {
 
   /** Try the observed address first; only use a uniquely linked phone as fallback. */
   pictureJids(jid: string): string[] {
-    if (!isRoomJid(jid)) return [];
+    if (!isRoomJid(jid) || isBotJid(jid)) return [];
     const id = personalJid(jid) ?? jid;
     const phones = [...(this.aliases.get(id) ?? [])].filter(phoneJid);
     const phone = phones.length === 1 ? phones[0] : undefined;
     return phone && phone !== id ? [id, phone] : [id];
+  }
+
+  private botName(id: string, chatName?: string | null): string | undefined {
+    const contact = this.names.get(id);
+    return (
+      [
+        chatName,
+        contact?.name,
+        contact?.verifiedName,
+        this.pushNames.get(id)?.name,
+        contact?.notify,
+      ].find((name) => name && name !== id && name !== jidUser(id)) ?? undefined
+    );
   }
 
   private personalName(
@@ -360,7 +396,9 @@ export class WaStore {
     const chat = personalJid(message.roomId)
       ? this.chats.get(message.roomId)
       : undefined;
-    const sender = this.personalName(message.senderId, chat?.name);
+    const sender = isBotJid(message.senderId)
+      ? this.botName(message.senderId, this.chats.get(message.senderId)?.name)
+      : this.personalName(message.senderId, chat?.name);
     return sender ? { ...message, sender } : message;
   }
 

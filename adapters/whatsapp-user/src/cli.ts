@@ -8,6 +8,7 @@ import { CAPABILITIES } from "./capabilities";
 import { linkAccount } from "./login";
 import { openWaStore } from "./persistence";
 import { connectWhatsApp } from "./session";
+import type { WaBotDiagnostic } from "./types";
 
 /**
  * Personal WhatsApp account adapter (an unofficial client; read
@@ -44,7 +45,7 @@ if (command !== "login" && command !== "serve") {
     open: () =>
       openBaileys({
         authDir,
-        findMessage: (roomId, id) => cache.store.find(roomId, id),
+        findMessage: (roomId, id) => cache.store.findOutbound(roomId, id),
       }),
     onQr: (qr) => qrcode.generate(qr, { small: true }),
     signal: AbortSignal.timeout(LOGIN_DEADLINE_MS),
@@ -77,13 +78,14 @@ if (command !== "login" && command !== "serve") {
     open: () =>
       openBaileys({
         authDir,
-        findMessage: (roomId, id) => cache.store.find(roomId, id),
+        findMessage: (roomId, id) => cache.store.findOutbound(roomId, id),
       }),
     schedule(run, delayMs) {
       const timer = setTimeout(run, delayMs);
       return () => clearTimeout(timer);
     },
   });
+  const reportedBotReasons = new Set<WaBotDiagnostic>();
   link.subscribe((event) => {
     if (event.type === "state")
       console.log(`tsuba-whatsapp-user state: ${event.state}`);
@@ -93,6 +95,13 @@ if (command !== "login" && command !== "serve") {
       console.log("tsuba-whatsapp-user group metadata fetching");
     else if (event.type === "groupSyncComplete")
       console.log(`tsuba-whatsapp-user group metadata fetched: ${event.count}`);
+    else if (
+      event.type === "botDiagnostic" &&
+      !reportedBotReasons.has(event.reason)
+    ) {
+      reportedBotReasons.add(event.reason);
+      console.warn(`tsuba-whatsapp-user bot history: ${event.reason}`);
+    }
   });
   const server = serve({
     token:
