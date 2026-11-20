@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -10,6 +11,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 )
 
 func defaultRoom(chat types.JID) Room {
@@ -30,7 +32,7 @@ type mappedEvent struct {
 	message *Message
 }
 
-func mapMessageEvent(evt *events.Message) mappedEvent {
+func mapMessageEvent(evt *events.Message, self ...types.JID) mappedEvent {
 	if evt == nil {
 		return mappedEvent{}
 	}
@@ -69,30 +71,41 @@ func mapMessageEvent(evt *events.Message) mappedEvent {
 	id, editedAt := info.ID, time.Time{}
 	if protocol := content.GetProtocolMessage(); protocol != nil {
 		key := protocol.GetKey()
-		if protocol.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT ||
-			key.GetID() == "" ||
-			(key.FromMe != nil && key.GetFromMe() != info.IsFromMe) ||
-			!matchesEditJID(key.GetRemoteJID(), chat) ||
-			!matchesEditJID(key.GetParticipant(), sender) {
+		if protocol.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT || key.GetID() == "" {
 			return result
 		}
-		id, editedAt = key.GetID(), info.Timestamp
+		content, _ = unwrapTextMessage(protocol.GetEditedMessage())
+		matchesEnvelope := (key.FromMe == nil || key.GetFromMe() == info.IsFromMe) &&
+			matchesEditJID(key.GetRemoteJID(), chat) && matchesEditJID(key.GetParticipant(), sender)
+		// Inbound direct bot edits can carry a receiver-relative key. It
+		// identifies only the target ID; keep the room and author from the envelope.
+		receiverKey := !info.IsFromMe && info.Sender.ToNonAD() == chat && sender.IsBot() &&
+			content.GetRichResponseMessage() != nil && key.GetFromMe() &&
+			key.GetParticipant() == "" && key.GetRemoteJID() != "" &&
+			slices.ContainsFunc(self, func(own types.JID) bool {
+				return matchesEditJID(key.GetRemoteJID(), own.ToNonAD())
+			})
+		if !matchesEnvelope && !receiverKey {
+			return result
+		}
+		id, editedAt = key.GetID(), info.MsgBotInfo.EditSenderTimestampMS
 		if ms := protocol.GetTimestampMS(); ms > 0 {
 			editedAt = time.UnixMilli(ms)
+		} else if editedAt.IsZero() {
+			editedAt = info.Timestamp
 		}
 		if target := info.MsgBotInfo.EditTargetID; target != "" && target != id {
 			return result
 		}
-		content, _ = unwrapTextMessage(protocol.GetEditedMessage())
 	} else {
 		switch info.MsgBotInfo.EditType {
 		case types.EditTypeInner, types.EditTypeLast, types.EditTypeFull:
-			if !info.Sender.IsBot() || info.IsFromMe {
+			if !info.Sender.ToNonAD().IsBot() || info.IsFromMe {
 				return result
 			}
 			if target := info.MsgBotInfo.EditTargetID; target != "" {
 				id = target
-			} else if !wrappedEdit && !evt.IsEdit {
+			} else if !wrappedEdit && !evt.IsEdit && info.Edit != types.EditAttributeMessageEdit {
 				return result
 			}
 			editedAt = info.MsgBotInfo.EditSenderTimestampMS
@@ -100,14 +113,17 @@ func mapMessageEvent(evt *events.Message) mappedEvent {
 				editedAt = info.Timestamp
 			}
 		default:
-			if wrappedEdit || evt.IsEdit {
+			if wrappedEdit || evt.IsEdit || info.Edit == types.EditAttributeMessageEdit {
 				editedAt = info.Timestamp
 			}
 		}
 	}
-
 	text, reply := displayText(content)
-	if strings.TrimSpace(text) == "" {
+	attachment, caption, mediaReply, media, isMedia := mediaMetadata(content)
+	if isMedia {
+		text, reply = caption, mediaReply
+	}
+	if strings.TrimSpace(text) == "" && !isMedia {
 		return result
 	}
 	room := defaultRoom(chat)
@@ -128,6 +144,14 @@ func mapMessageEvent(evt *events.Message) mappedEvent {
 		ID: id, RoomID: room.ID, SenderID: sender.String(), Sender: name,
 		Text: text, Kind: "text", SentAt: formatStoreTime(info.Timestamp),
 		FromMe: info.IsFromMe, ReplyTo: reply,
+		raw: proto.CloneOf(content),
+	}
+	if isMedia {
+		msg.Kind = "media"
+		if hasMediaLocation(media) {
+			attachment.ID = mediaID(room.ID, id)
+			msg.Attachments = []Attachment{attachment}
+		}
 	}
 	if !editedAt.IsZero() {
 		msg.EditedAt = formatStoreTime(editedAt)
@@ -176,6 +200,8 @@ func unwrapTextMessage(msg *waE2E.Message) (*waE2E.Message, bool) {
 			msg = msg.GetBotInvokeMessage().GetMessage()
 		case msg.GetEphemeralMessage() != nil:
 			msg = msg.GetEphemeralMessage().GetMessage()
+		case msg.GetDocumentWithCaptionMessage() != nil:
+			msg = msg.GetDocumentWithCaptionMessage().GetMessage()
 		case msg.GetEditedMessage() != nil:
 			edited = true
 			msg = msg.GetEditedMessage().GetMessage()

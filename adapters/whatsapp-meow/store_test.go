@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func requireNoStoreUpdate(t *testing.T, updates <-chan Update) {
 
 func syntheticStoreMessage(index int) Message {
 	return Message{
-		ID: fmt.Sprintf("m-%03d", index), RoomID: "fixture", SenderID: "synthetic-sender",
+		ID: fmt.Sprintf("m-%03d", index), RoomID: "000001@s.whatsapp.net", SenderID: "synthetic-sender",
 		Sender: "You", Text: "sample", Kind: "text", FromMe: true,
 		SentAt: time.Date(2025, 1, 2, 0, 0, index, 0, time.UTC).Format(time.RFC3339),
 	}
@@ -70,7 +71,7 @@ func TestStoreHistoryDeduplicatesAndOnlyEmitsConfirmedAdvances(t *testing.T) {
 	live := syntheticStoreMessage(3)
 	storeMust(t, s.Put(live, true))
 	update := nextStoreUpdate(t, updates)
-	if update.Event != "message" || update.Message == nil || *update.Message != live {
+	if update.Event != "message" || update.Message == nil || !reflect.DeepEqual(*update.Message, live) {
 		t.Fatalf("live update = %+v", update)
 	}
 
@@ -80,7 +81,7 @@ func TestStoreHistoryDeduplicatesAndOnlyEmitsConfirmedAdvances(t *testing.T) {
 	update = nextStoreUpdate(t, updates)
 	want := first
 	want.DeliveryStatus = "delivered"
-	if update.Event != "message.edited" || update.Message == nil || *update.Message != want {
+	if update.Event != "message.edited" || update.Message == nil || !reflect.DeepEqual(*update.Message, want) {
 		t.Fatalf("history receipt update = %+v", update)
 	}
 	storeMust(t, s.Receipt(first.RoomID, []string{first.ID, "absent"}, "read"))
@@ -99,30 +100,31 @@ func TestStorePageAndRestartKeepOnlyNewestCachedMessages(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "private", "cache.json")
 	s := openSyntheticStore(t, path)
+	roomID := syntheticStoreMessage(0).RoomID
 	for i := 204; i >= 0; i-- {
 		storeMust(t, s.Put(syntheticStoreMessage(i), false))
 	}
-	page, earlier, err := s.Page("fixture", 200, "")
+	page, earlier, err := s.Page(roomID, 200, "")
 	storeMust(t, err)
 	if len(page) != 200 || earlier || page[0].ID != "m-005" || page[199].ID != "m-204" {
 		t.Fatalf("unexpected memory window: %d rows, earlier %v", len(page), earlier)
 	}
-	page, earlier, err = s.Page("fixture", 2, "m-009")
+	page, earlier, err = s.Page(roomID, 2, "m-009")
 	storeMust(t, err)
 	if len(page) != 2 || !earlier || page[0].ID != "m-007" || page[1].ID != "m-008" {
 		t.Fatalf("wrong exclusive before page: %v, earlier %v", page, earlier)
 	}
-	_, _, err = s.Page("fixture", 2, "m-004")
+	_, _, err = s.Page(roomID, 2, "m-004")
 	var notFound *APIError
 	if !errors.As(err, &notFound) || notFound.Code != "NOT_FOUND" {
 		t.Fatalf("evicted cursor should be NOT_FOUND, got %v", err)
 	}
-	storeMust(t, s.PutRoom(Room{ID: "fixture", Kind: "direct", Title: "Known room", Unread: 2}))
-	storeMust(t, s.PutRoom(Room{ID: "fixture", Unread: 3}))
+	storeMust(t, s.PutRoom(Room{ID: roomID, Kind: "direct", Title: "Known room", Unread: 2}))
+	storeMust(t, s.PutRoom(Room{ID: roomID, Unread: 3}))
 	storeMust(t, s.Close())
 
 	reopened := openSyntheticStore(t, path)
-	page, earlier, err = reopened.Page("fixture", 100, "")
+	page, earlier, err = reopened.Page(roomID, 100, "")
 	storeMust(t, err)
 	if len(page) != 50 || earlier || page[0].ID != "m-155" || page[49].ID != "m-204" {
 		t.Fatalf("unexpected disk window: %d rows, earlier %v", len(page), earlier)
@@ -164,11 +166,11 @@ func TestStoreEvictsOldestRoomAndBoundsSlowSubscriber(t *testing.T) {
 	defer cancel()
 	for i := range 501 {
 		msg := syntheticStoreMessage(i)
-		msg.RoomID = fmt.Sprintf("fixture-%03d", i)
+		msg.RoomID = fmt.Sprintf("000%03d@s.whatsapp.net", i)
 		storeMust(t, s.Put(msg, true))
 	}
 	rooms := s.Rooms()
-	if len(rooms) != 500 || rooms[0].ID != "fixture-500" || rooms[499].ID != "fixture-001" {
+	if len(rooms) != 500 || rooms[0].ID != "000500@s.whatsapp.net" || rooms[499].ID != "000001@s.whatsapp.net" {
 		t.Fatalf("room cache did not retain the 500 newest rooms: n=%d", len(rooms))
 	}
 	for i := range 65 {
@@ -211,7 +213,7 @@ func TestStoreConcurrentPublishAndUnsubscribe(t *testing.T) {
 	for err := range errs {
 		storeMust(t, err)
 	}
-	page, earlier, err := s.Page("fixture", 100, "")
+	page, earlier, err := s.Page(syntheticStoreMessage(0).RoomID, 100, "")
 	storeMust(t, err)
 	if len(page) != 100 || earlier {
 		t.Fatalf("subscription churn interfered with writes: %d rows, earlier %v", len(page), earlier)

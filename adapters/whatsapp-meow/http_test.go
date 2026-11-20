@@ -135,7 +135,7 @@ func TestHTTPRoutesAuthenticateBeforeMethodAndFeature(t *testing.T) {
 		{"blocked before routing", wireRequest{method: "GET", path: "/absent"}, 401, "UNAUTHORIZED", ""},
 		{"unknown", wireRequest{method: "GET", path: "/absent", auth: httpTestBearer}, 404, "NOT_FOUND", ""},
 		{"method before feature", wireRequest{method: "GET", path: "/edit", auth: httpTestBearer}, 405, "METHOD_NOT_ALLOWED", "POST"},
-		{"no icon", wireRequest{method: "GET", path: "/icon", auth: httpTestBearer}, 404, "NOT_FOUND", ""},
+		{"icon method", wireRequest{method: "POST", path: "/icon", auth: httpTestBearer}, 405, "METHOD_NOT_ALLOWED", "GET"},
 		{"resume refused", wireRequest{method: "GET", path: "/stream?since=", auth: httpTestBearer}, 501, "NOT_SUPPORTED", ""},
 		{"bad limit", wireRequest{method: "GET", path: "/messages?roomId=" + httpTestRoom + "&limit=%2B1", auth: httpTestBearer}, 400, "INVALID_REQUEST", ""},
 		{"unseen room", wireRequest{method: "GET", path: "/messages?roomId=" + httpTestRoom, auth: httpTestBearer}, 200, "", ""},
@@ -161,7 +161,7 @@ func TestHTTPRoutesAuthenticateBeforeMethodAndFeature(t *testing.T) {
 		})
 	}
 	for path, method := range map[string]string{
-		"/media": "GET", "/upload": "POST", "/edit": "POST", "/delete": "POST", "/react": "POST", "/read": "POST",
+		"/edit": "POST", "/delete": "POST", "/react": "POST", "/read": "POST",
 	} {
 		t.Run(path, func(t *testing.T) {
 			answer := httpWire(t, server, wireRequest{method: method, path: path, auth: httpTestBearer})
@@ -218,7 +218,7 @@ func TestHTTPSendStrictJSONGatesAndUnknownOutcome(t *testing.T) {
 		{"empty text", "application/json", httpSendJSON(httpTestRoom, ""), 400, "INVALID_REQUEST"},
 		{"oversized body", "application/json", httpSendJSON(httpTestRoom, "fixture") + strings.Repeat(" ", 33<<10), 400, "INVALID_REQUEST"},
 		{"codepoint overflow", "application/json", httpSendJSON(httpTestRoom, strings.Repeat("\U0001F408", 2049)), 400, "INVALID_REQUEST"},
-		{"reply refused", "application/json", `{"roomId":"` + httpTestRoom + `","text":"fixture","replyTo":"original"}`, 501, "NOT_SUPPORTED"},
+		{"unseen reply refused", "application/json", `{"roomId":"` + httpTestRoom + `","text":"fixture","replyTo":"original"}`, 404, "NOT_FOUND"},
 		{"unknown bot refused", "application/json", httpSendJSON(httpTestBot, "fixture"), 501, "NOT_SUPPORTED"},
 		{"uncertain write", "application/json", httpSendJSON(httpTestRoom, "unknown"), 500, "INTERNAL"},
 		{"limit accepted", "application/json; charset=utf-8", httpSendJSON(httpTestKnownBot, strings.Repeat("\U0001F408", 2048)), 200, ""},

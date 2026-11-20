@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -78,7 +79,7 @@ func TestHTTPStreamEmitsSameIDEditAndKeepsOriginalCursor(t *testing.T) {
 	httpPut(t, store, msg, true)
 	var initial streamMessage
 	if err := json.Unmarshal(wantHTTPEvent(t, stream, "message"), &initial); err != nil ||
-		!initial.OK || initial.Message == nil || *initial.Message != msg {
+		!initial.OK || initial.Message == nil || !reflect.DeepEqual(*initial.Message, msg) {
 		t.Fatalf("invalid initial event: %+v (%v)", initial, err)
 	}
 	var cursor streamCursor
@@ -90,7 +91,7 @@ func TestHTTPStreamEmitsSameIDEditAndKeepsOriginalCursor(t *testing.T) {
 	httpPut(t, store, msg, true)
 	var edited streamMessage
 	if err := json.Unmarshal(wantHTTPEvent(t, stream, "message.edited"), &edited); err != nil ||
-		!edited.OK || edited.Message == nil || *edited.Message != msg {
+		!edited.OK || edited.Message == nil || !reflect.DeepEqual(*edited.Message, msg) {
 		t.Fatalf("edit did not keep the original identity: %+v (%v)", edited, err)
 	}
 	httpPut(t, store, httpFixtureMessage(httpTestRoom, "next", "synthetic next"), true)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -114,7 +115,7 @@ func TestMappingRichProtocolEditChecksKeyAndUpdatesOriginal(t *testing.T) {
 				t.Fatalf("edit not applied using protocol timestamp: %+v", msg)
 			}
 			update := nextStoreUpdate(t, updates)
-			if update.Event != "message.edited" || update.Message == nil || *update.Message != msg {
+			if update.Event != "message.edited" || update.Message == nil || !reflect.DeepEqual(*update.Message, msg) {
 				t.Fatalf("edit did not emit the complete updated message: %+v", update)
 			}
 		})
@@ -140,5 +141,57 @@ func TestMappingBotEditTargetsOriginalAndRejectsStaleEdit(t *testing.T) {
 	storeMust(t, err)
 	if len(page) != 1 || page[0].ID != "base" || page[0].Text != "later" || page[0].EditedAt != "2025-01-02T03:04:10Z" {
 		t.Fatalf("bot edit target or ordering lost: %+v", page)
+	}
+}
+
+func TestMappingReceiverRelativeEditRequiresOwnDirectRichBotKey(t *testing.T) {
+	t.Parallel()
+	own := types.NewJID("900001", types.HiddenUserServer)
+	for _, tc := range []struct {
+		name, remote, participant string
+		trusted, rich, group      bool
+		want                      bool
+	}{
+		{"own LID", own.String(), "", true, true, false, true},
+		{"own device LID", "900001:7@lid", "", true, true, false, true},
+		{"untrusted self", own.String(), "", false, true, false, false},
+		{"foreign LID", "900002@lid", "", true, true, false, false},
+		{"no receiver", "", "", true, true, false, false},
+		{"foreign participant", own.String(), "2@bot", true, true, false, false},
+		{"nonrich content", own.String(), "", true, false, false, false},
+		{"group bot", own.String(), "", true, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			replacement := &waE2E.Message{Conversation: new("replacement")}
+			if tc.rich {
+				replacement = streamRich(t, "replacement")
+			}
+			edit := syntheticBotEvent("edit", &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
+				Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+				Key: &waCommon.MessageKey{
+					ID: new("original"), RemoteJID: &tc.remote, Participant: &tc.participant, FromMe: new(true),
+				},
+				EditedMessage: replacement,
+			}})
+			if tc.group {
+				edit.Info.IsGroup = true
+				edit.Info.Chat = types.NewJID("1", types.GroupServer)
+			}
+			var self []types.JID
+			if tc.trusted {
+				self = append(self, own)
+			}
+			got := mapMessageEvent(edit, self...).message
+			if !tc.want {
+				if got != nil {
+					t.Fatalf("receiver-relative edit mapped outside the trusted bot path: %+v", got)
+				}
+				return
+			}
+			if got == nil || got.ID != "original" || got.SenderID != syntheticBotRoom ||
+				got.RoomID != syntheticBotRoom || got.FromMe || got.Text != "replacement" || got.EditedAt == "" {
+				t.Fatalf("receiver-relative edit did not preserve envelope ownership: %+v", got)
+			}
+		})
 	}
 }

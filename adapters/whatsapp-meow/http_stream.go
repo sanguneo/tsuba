@@ -79,7 +79,8 @@ func (h *adapterHTTP) stream(w http.ResponseWriter, r *http.Request) {
 			}
 			switch update.Event {
 			case "message", "message.edited":
-				if err := out.emit(update.Event, streamMessage{ok, update.Message}); err != nil {
+				message := h.messageAvatars(r.Context(), []Message{*update.Message})[0]
+				if err := out.emit(update.Event, streamMessage{ok, &message}); err != nil {
 					return
 				}
 				if update.Event == "message" {
@@ -87,6 +88,14 @@ func (h *adapterHTTP) stream(w http.ResponseWriter, r *http.Request) {
 					if err := out.emit("cursor", streamCursor{ok, cursor}); err != nil {
 						return
 					}
+				}
+			case "message.deleted":
+				if err := out.emit(update.Event, struct {
+					success
+					RoomID     string   `json:"roomId"`
+					MessageIDs []string `json:"messageIds"`
+				}{ok, update.RoomID, update.MessageIDs}); err != nil {
+					return
 				}
 			default:
 				continue // Never emit an undeclared update.

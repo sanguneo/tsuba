@@ -10,6 +10,10 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -25,8 +29,42 @@ var (
 )
 
 type cachedRoom struct {
-	Room     Room      `json:"room"`
-	Messages []Message `json:"messages"`
+	Room     Room        `json:"room"`
+	Messages []Message   `json:"messages"`
+	Meta     roomMeta    `json:"meta,omitzero"`
+	Raw      rawPayloads `json:"raw,omitempty"`
+}
+
+// Wire protobuf preserves nested oneofs and fields unknown to the pinned SDK.
+type rawPayloads map[string]*waE2E.Message
+
+func (r rawPayloads) MarshalJSON() ([]byte, error) {
+	encoded := make(map[string][]byte, len(r))
+	for id, message := range r {
+		payload, err := proto.MarshalOptions{AllowPartial: true}.Marshal(message)
+		if err != nil {
+			return nil, err
+		}
+		encoded[id] = payload
+	}
+	return json.Marshal(encoded)
+}
+
+func (r *rawPayloads) UnmarshalJSON(data []byte) error {
+	var encoded map[string][]byte
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return err
+	}
+	decoded := make(rawPayloads, len(encoded))
+	for id, payload := range encoded {
+		message := &waE2E.Message{}
+		if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(payload, message); err != nil {
+			return err
+		}
+		decoded[id] = message
+	}
+	*r = decoded
+	return nil
 }
 
 type cacheSnapshot struct {
@@ -98,13 +136,21 @@ func NewStore(path string) (*Store, error) {
 			return nil, errCorruptCache
 		}
 		ids := make(map[string]bool, len(entry.Messages))
-		for _, msg := range entry.Messages {
+		for i, msg := range entry.Messages {
 			if !validStoredMessage(msg) || msg.RoomID != id || ids[msg.ID] {
 				return nil, errCorruptCache
 			}
 			ids[msg.ID] = true
+			entry.Messages[i].raw = entry.Raw[msg.ID]
+			entry.Messages[i].SenderAvatar = ""
+		}
+		for id := range entry.Raw {
+			if !ids[id] {
+				return nil, errCorruptCache
+			}
 		}
 		slices.SortFunc(entry.Messages, compareMessageAge)
+		entry.Room.Avatar = ""
 		s.rooms[id] = entry
 	}
 	return s, nil
@@ -126,6 +172,8 @@ func (s *Store) commit(entry cachedRoom) error {
 		snapshot.Rooms = snapshot.Rooms[:min(len(snapshot.Rooms), storeRoomLimit)]
 		for i, item := range snapshot.Rooms {
 			item.Messages = item.Messages[max(0, len(item.Messages)-storeDiskMessageLimit):]
+			item.Raw = maps.Clone(item.Raw)
+			pruneRaw(&item)
 			snapshot.Rooms[i] = item
 		}
 		if err := writeCache(s.path, snapshot); err != nil {
@@ -196,7 +244,15 @@ func (s *Store) Rooms() []Room {
 	ordered := s.orderedRooms()
 	rooms := make([]Room, 0, len(ordered))
 	for _, entry := range ordered {
-		rooms = append(rooms, cloneRoom(entry.Room))
+		jid, err := types.ParseJID(entry.Room.ID)
+		if err != nil || !canonicalRoom.MatchString(entry.Room.ID) ||
+			entry.Meta.Archived || entry.Meta.Left ||
+			(len(entry.Messages) == 0 && !entry.Meta.Observed) {
+			continue
+		}
+		room := cloneRoom(entry.Room)
+		room.Title = s.roomTitle(entry, jid)
+		rooms = append(rooms, room)
 	}
 	return rooms
 }
@@ -219,7 +275,12 @@ func (s *Store) Page(roomID string, limit int, before string) ([]Message, bool, 
 		}
 	}
 	start := max(0, end-limit)
-	return append([]Message{}, entry.Messages[start:end]...), start > 0, nil
+	page := append([]Message{}, entry.Messages[start:end]...)
+	for i, msg := range page {
+		page[i] = cloneMessage(msg)
+		page[i].Sender = s.botSender(msg)
+	}
+	return page, start > 0, nil
 }
 
 func (s *Store) Find(roomID, id string) (Message, bool) {
@@ -227,10 +288,18 @@ func (s *Store) Find(roomID, id string) (Message, bool) {
 	defer s.mu.RUnlock()
 	for _, msg := range s.rooms[roomID].Messages {
 		if msg.ID == id {
+			msg = cloneMessage(msg)
+			msg.Sender = s.botSender(msg)
 			return msg, true
 		}
 	}
 	return Message{}, false
+}
+
+func (s *Store) Raw(roomID, id string) *waE2E.Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return proto.CloneOf(s.rooms[roomID].Raw[id])
 }
 
 func compareMessageAge(a, b Message) int {

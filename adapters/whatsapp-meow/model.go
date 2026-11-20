@@ -1,19 +1,37 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+)
 
 type Message struct {
-	ID             string `json:"id"`
-	RoomID         string `json:"roomId"`
-	SenderID       string `json:"senderId,omitempty"`
-	Sender         string `json:"sender"`
-	Text           string `json:"text"`
-	Kind           string `json:"kind"`
-	SentAt         string `json:"sentAt"`
-	EditedAt       string `json:"editedAt,omitempty"`
-	FromMe         bool   `json:"fromMe"`
-	DeliveryStatus string `json:"deliveryStatus,omitempty"`
-	ReplyTo        string `json:"replyTo,omitempty"`
+	ID             string       `json:"id"`
+	RoomID         string       `json:"roomId"`
+	SenderID       string       `json:"senderId,omitempty"`
+	Sender         string       `json:"sender"`
+	Text           string       `json:"text"`
+	Kind           string       `json:"kind"`
+	SentAt         string       `json:"sentAt"`
+	EditedAt       string       `json:"editedAt,omitempty"`
+	FromMe         bool         `json:"fromMe"`
+	DeliveryStatus string       `json:"deliveryStatus,omitempty"`
+	ReplyTo        string       `json:"replyTo,omitempty"`
+	Attachments    []Attachment `json:"attachments,omitempty"`
+	SenderAvatar   string       `json:"senderAvatar,omitempty"`
+	raw            *waE2E.Message
+}
+
+type Attachment struct {
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	MimeType        string `json:"mimeType,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Size            uint64 `json:"size,omitempty"`
+	Width           uint32 `json:"width,omitempty"`
+	Height          uint32 `json:"height,omitempty"`
+	DurationSeconds uint32 `json:"durationSeconds,omitempty"`
 }
 
 type Room struct {
@@ -24,6 +42,7 @@ type Room struct {
 	LastActivityAt string          `json:"lastActivityAt,omitempty"`
 	LastMessage    *Preview        `json:"lastMessage,omitempty"`
 	Features       map[string]bool `json:"features,omitempty"`
+	Avatar         string          `json:"avatar,omitempty"`
 }
 
 type Preview struct {

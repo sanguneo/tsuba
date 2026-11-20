@@ -74,10 +74,6 @@ func (h *adapterHTTP) send(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, "INVALID_REQUEST")
 		return
 	}
-	if req.ReplyTo != nil {
-		writeFailure(w, "NOT_SUPPORTED")
-		return
-	}
 	ctx := r.Context()
 	select {
 	case <-ctx.Done():
@@ -102,6 +98,16 @@ func (h *adapterHTTP) send(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(req.RoomID, "@bot") && !h.sender.CanSendBot(ctx, req.RoomID) {
 		writeFailure(w, "NOT_SUPPORTED")
 		return
+	}
+	if req.ReplyTo != nil {
+		if strings.HasSuffix(req.RoomID, "@bot") {
+			writeFailure(w, "NOT_SUPPORTED")
+			return
+		}
+		if h.store.Raw(req.RoomID, *req.ReplyTo) == nil {
+			writeFailure(w, "NOT_FOUND")
+			return
+		}
 	}
 	if ctx.Err() != nil {
 		return

@@ -85,8 +85,6 @@ func TestHTTPEveryContractOperationIsRoutedAndFeatureGated(t *testing.T) {
 				})
 				defer response.Body.Close()
 				switch {
-				case path == "/icon":
-					wireError(t, wireAnswer(t, response, 404), "NOT_FOUND")
 				case operation.Feature != "" && features[operation.Feature] == nil:
 					wireError(t, wireAnswer(t, response, 501), "NOT_SUPPORTED")
 				default:

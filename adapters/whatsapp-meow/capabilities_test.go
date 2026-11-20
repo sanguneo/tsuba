@@ -34,15 +34,19 @@ func TestHTTPCapabilitiesMatchContractAndCanonicalRevision(t *testing.T) {
 		t.Fatalf("capabilities did not announce contract version %s", contract.Info.Version)
 	}
 	features := map[string]any{
-		"rooms.list":      map[string]any{},
-		"messages.read":   map[string]any{"paging": "before-id", "maxLimit": float64(100)},
-		"messages.stream": map[string]any{"resume": "none", "events": []any{"message.edited"}},
-		"messages.send":   map[string]any{"maxLength": float64(2048), "receipt": "accepted"},
+		"attachments.read": map[string]any{},
+		"attachments.send": map[string]any{"maxBytes": float64(64000000), "caption": true, "captionMaxLength": float64(1024), "receipt": "accepted"},
+		"avatars.read":     map[string]any{},
+		"messages.reply":   map[string]any{},
+		"rooms.list":       map[string]any{},
+		"messages.read":    map[string]any{"paging": "before-id", "maxLimit": float64(100)},
+		"messages.stream":  map[string]any{"resume": "none", "events": []any{"message.edited", "message.deleted"}},
+		"messages.send":    map[string]any{"maxLength": float64(2048), "receipt": "accepted"},
 	}
 	want := map[string]any{
 		"adapter":  map[string]any{"name": "tsuba-whatsapp-meow", "version": "0.1.0"},
 		"account":  map[string]any{"kind": "user"},
-		"provider": map[string]any{"id": "whatsapp-meow", "name": "WhatsApp (whatsmeow)"},
+		"provider": map[string]any{"id": "whatsapp-meow", "name": "WhatsApp", "icon": iconVersion()},
 		"features": features,
 	}
 	for key, value := range want {
@@ -92,8 +96,11 @@ func TestHTTPRoomAndWriteGatesUseSessionState(t *testing.T) {
 				}
 				for _, room := range rooms.Rooms {
 					var want map[string]bool
-					if room.ID == httpTestBot || (room.ID == httpTestKnownBot && row.state != "open") {
-						want = map[string]bool{"messages.send": false}
+					if strings.HasSuffix(room.ID, "@bot") {
+						want = map[string]bool{"messages.reply": false, "attachments.send": false}
+						if room.ID == httpTestBot || (room.ID == httpTestKnownBot && row.state != "open") {
+							want["messages.send"] = false
+						}
 					}
 					if !reflect.DeepEqual(room.Features, want) {
 						t.Fatalf("unexpected room narrowing for state %q: %v", row.state, room.Features)

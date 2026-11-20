@@ -20,6 +20,7 @@ type adapterHTTP struct {
 	sender  Sender
 	writes  writeLine
 	streams chan struct{}
+	avatars *roomAvatarCache
 }
 
 func NewHandler(token string, store *Store, sender Sender) (http.Handler, error) {
@@ -35,6 +36,9 @@ func NewHandler(token string, store *Store, sender Sender) (http.Handler, error)
 		token: sha256.Sum256([]byte(token)), store: store, sender: sender,
 		streams: make(chan struct{}, 8),
 	}
+	if transport, ok := sender.(*link); ok {
+		h.avatars = newRoomAvatarCache(transport.client, nil)
+	}
 	type route struct {
 		method string
 		handle http.HandlerFunc
@@ -47,16 +51,13 @@ func NewHandler(token string, store *Store, sender Sender) (http.Handler, error)
 		"/capabilities": {http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, declaration)
 		}},
-		// Unlike feature routes, the contract specifies 404 for a missing icon.
-		"/icon": {http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
-			writeFailure(w, "NOT_FOUND")
-		}},
+		"/icon":     {http.MethodGet, serveIcon},
 		"/rooms":    {http.MethodGet, h.rooms},
 		"/messages": {http.MethodGet, h.messages},
 		"/stream":   {http.MethodGet, h.stream},
-		"/media":    {http.MethodGet, unsupported},
+		"/media":    {http.MethodGet, h.media},
 		"/send":     {http.MethodPost, h.send},
-		"/upload":   {http.MethodPost, unsupported},
+		"/upload":   {http.MethodPost, h.upload},
 		"/edit":     {http.MethodPost, unsupported},
 		"/delete":   {http.MethodPost, unsupported},
 		"/react":    {http.MethodPost, unsupported},
@@ -103,12 +104,24 @@ func (h *adapterHTTP) rooms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rooms := append([]Room{}, h.store.Rooms()...)
+	var photos map[string]string
+	if state == "open" && h.avatars != nil {
+		ids := make([]string, len(rooms))
+		for i, room := range rooms {
+			ids[i] = room.ID
+		}
+		photos = h.avatars.resolveRooms(r.Context(), ids)
+	}
 	for i := range rooms {
 		room := &rooms[i]
+		room.Avatar = photos[room.ID]
 		room.Features = nil
+		if strings.HasSuffix(room.ID, "@bot") {
+			room.Features = map[string]bool{"messages.reply": false, "attachments.send": false}
+		}
 		if strings.HasSuffix(room.ID, "@bot") &&
 			(state != "open" || !h.sender.CanSendBot(r.Context(), room.ID) || h.sender.State() != "open") {
-			room.Features = map[string]bool{"messages.send": false}
+			room.Features["messages.send"] = false
 		}
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -158,6 +171,7 @@ func (h *adapterHTTP) messages(w http.ResponseWriter, r *http.Request) {
 	if messages == nil {
 		messages = []Message{}
 	}
+	messages = h.messageAvatars(r.Context(), messages)
 	writeJSON(w, http.StatusOK, struct {
 		success
 		Messages   []Message `json:"messages"`

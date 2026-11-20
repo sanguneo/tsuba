@@ -76,20 +76,33 @@ func (l *link) Send(ctx context.Context, request SendRequest) (Message, error) {
 	if jid.IsBot() && !l.CanSendBot(ctx, request.RoomID) {
 		return Message{}, &APIError{Code: "NOT_SUPPORTED"}
 	}
+	quoted, err := l.replyContext(request.RoomID, request.ReplyTo)
+	if err != nil {
+		return Message{}, err
+	}
+	content := &waE2E.Message{Conversation: proto.String(request.Text)}
+	if quoted != nil {
+		content = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(request.Text), ContextInfo: quoted,
+		}}
+	}
 	// Automatic reconnection is disabled at construction. Upstream retryFrame
 	// cannot resend an uncertain frame because this client never reconnects.
-	response, err := l.client.SendMessage(ctx, jid, &waE2E.Message{
-		Conversation: proto.String(request.Text),
-	})
+	response, err := l.client.SendMessage(ctx, jid, content)
 	if err != nil {
 		return Message{}, sendError(err)
 	}
-	return Message{
+	message := Message{
 		ID: response.ID, RoomID: request.RoomID, Sender: "Me",
 		Text: request.Text, Kind: "text", FromMe: true,
 		SentAt:         response.Timestamp.UTC().Format(time.RFC3339Nano),
 		DeliveryStatus: "sent",
-	}, nil
+		raw: content,
+	}
+	if request.ReplyTo != nil {
+		message.ReplyTo = *request.ReplyTo
+	}
+	return message, nil
 }
 
 func sendError(err error) error {
