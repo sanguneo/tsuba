@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { proto } from "../adapters/whatsapp-user/node_modules/@whiskeysockets/baileys";
 import {
   type BaileysLike,
   prepareSessionDir,
 } from "../adapters/whatsapp-user/src/baileys";
+import { WaStore } from "../adapters/whatsapp-user/src/store";
+import { applyStoreEvent } from "../adapters/whatsapp-user/src/store-events";
 import { bounded, deferred } from "./harness/barriers";
 import { setup } from "./whatsapp-user-baileys-harness";
 import { GROUP, ROOM, text } from "./whatsapp-user-fixtures";
@@ -175,6 +178,184 @@ test("edits and revokes retain their keys; incoming receipt updates are ignored"
     { type: "edit", key, content: { conversation: "after" }, at: 5 },
     { type: "delete", keys: [key] },
     { type: "delete", keys: [key] },
+  ]);
+});
+
+const BOT_ROOM = "900001@bot";
+const OTHER_BOT_ROOM = "900002@bot";
+const botKey = { remoteJid: BOT_ROOM, id: "bot-reply", fromMe: false };
+
+function richResponse(...texts: string[]): proto.IMessage {
+  return {
+    richResponseMessage: {
+      unifiedResponse: {
+        data: Buffer.from(
+          JSON.stringify({
+            sections: [
+              { view_model: { primitive: { text: 42 } } },
+              ...texts.map((text) => ({ view_model: { primitive: { text } } })),
+              { view_model: {} },
+            ],
+          }),
+        ),
+      },
+    },
+  };
+}
+
+test.each(["protocol", "update", "both", "folded"] as const)(
+  "a rich reply and %s edit keep the target ID through store and restore",
+  async (shape) => {
+    const { wa, emit } = await setup();
+    const store = new WaStore();
+    const updates: ReturnType<typeof applyStoreEvent> = [];
+    wa.onEvent((event) => {
+      if (event.type === "messages" || event.type === "edit")
+        updates.push(...applyStoreEvent(store, event));
+    });
+    const upsert = (key: typeof botKey, message: proto.IMessage, at: number) =>
+      emit("messages.upsert", {
+        type: "notify",
+        messages: [{ key, message, messageTimestamp: at }],
+      });
+    upsert(botKey, richResponse("First", " ", "Second"), 10);
+    const editedMessage = richResponse("Edited");
+    if (shape === "protocol" || shape === "both")
+      upsert(
+        { ...botKey, id: "edit-stanza" },
+        {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
+            // Target address and direction are from the peer's perspective.
+            key: { fromMe: true, id: botKey.id },
+            editedMessage,
+            timestampMs: 12_500,
+          },
+        },
+        13,
+      );
+    if (shape === "update" || shape === "both")
+      emit("messages.update", [
+        {
+          key: botKey,
+          update: {
+            message: { editedMessage: { message: editedMessage } },
+            messageTimestamp: 12,
+          },
+        },
+      ]);
+    if (shape === "folded")
+      upsert(botKey, { editedMessage: { message: editedMessage } }, 12);
+    expect(updates).toMatchObject([
+      {
+        event: "message",
+        message: { id: botKey.id, senderId: BOT_ROOM, text: "First\nSecond" },
+      },
+      { event: "message.edited", message: { id: botKey.id, text: "Edited" } },
+    ]);
+    expect(
+      new WaStore(store.snapshot()).page(BOT_ROOM, 10).messages,
+    ).toMatchObject([
+      {
+        id: botKey.id,
+        text: "Edited",
+        sentAt: "1970-01-01T00:00:10.000Z",
+        editedAt: "1970-01-01T00:00:12.000Z",
+      },
+    ]);
+    expect(store.page(OTHER_BOT_ROOM, 10).messages).toEqual([]);
+  },
+);
+
+test("rich edits cannot target an outgoing message or leave their enclosing room", async () => {
+  const { wa, emit } = await setup();
+  const store = new WaStore();
+  wa.onEvent((event) => {
+    if (event.type === "messages" || event.type === "edit")
+      applyStoreEvent(store, event);
+  });
+  const promptKey = { ...botKey, id: "prompt", fromMe: true };
+  const editedMessage = richResponse("Not permitted");
+  emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: promptKey,
+        message: { conversation: "Prompt" },
+        messageTimestamp: 10,
+      },
+      { key: botKey, message: { conversation: "Reply" }, messageTimestamp: 10 },
+      {
+        key: { ...botKey, remoteJid: OTHER_BOT_ROOM, id: "edit-stanza" },
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
+            key: botKey,
+            editedMessage,
+          },
+        },
+        messageTimestamp: 11,
+      },
+    ],
+  });
+  emit("messages.update", [
+    {
+      key: { ...promptKey, fromMe: false },
+      update: { message: { editedMessage: { message: editedMessage } } },
+    },
+    {
+      key: { ...botKey, participant: OTHER_BOT_ROOM },
+      update: { message: { editedMessage: { message: editedMessage } } },
+    },
+  ]);
+  expect(store.page(BOT_ROOM, 10).messages.map(({ text }) => text)).toEqual([
+    "Prompt",
+    "Reply",
+  ]);
+  expect(store.page(OTHER_BOT_ROOM, 10).messages).toEqual([]);
+});
+
+test("textless bot frames are silent and malformed rich JSON reports only a fixed reason", async () => {
+  const { wa, emit } = await setup();
+  const store = new WaStore();
+  const diagnostics: unknown[] = [];
+  wa.onEvent((event) => {
+    if (event.type === "messages" || event.type === "edit")
+      applyStoreEvent(store, event);
+    if (event.type === "botDiagnostic") diagnostics.push(event);
+  });
+  const malformed = {
+    richResponseMessage: {
+      unifiedResponse: { data: Buffer.from("{invalid synthetic payload") },
+    },
+  };
+  emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      { key: botKey, message: { conversation: "Keep" }, messageTimestamp: 10 },
+      ...[
+        richResponse(" "),
+        // AI_METADATA_OPERATION (35) is newer than the pinned enum.
+        { protocolMessage: { type: 35, aiMetadataOperation: {} } },
+        malformed,
+      ].map((message, index) => ({
+        key: { ...botKey, id: `frame-${index}` },
+        message,
+        messageTimestamp: 11,
+      })),
+    ],
+  });
+  emit("messages.update", [
+    {
+      key: botKey,
+      update: { message: { editedMessage: { message: malformed } } },
+    },
+  ]);
+  expect(diagnostics).toEqual([
+    { type: "botDiagnostic", reason: "malformed-rich-response" },
+  ]);
+  expect(store.page(BOT_ROOM, 10).messages.map(({ text }) => text)).toEqual([
+    "Keep",
   ]);
 });
 

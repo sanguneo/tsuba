@@ -25,7 +25,7 @@ diff --git a/lib/Utils/direct-bot.js b/lib/Utils/direct-bot.js
 new file mode 100644
 --- /dev/null
 +++ b/lib/Utils/direct-bot.js
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,114 @@
 +import { proto } from '../../WAProto/index.js';
 +import { aesDecryptGCM, hkdf } from './crypto.js';
 +import { unpadRandomMax16 } from './generics.js';
@@ -110,7 +110,29 @@ new file mode 100644
 +        try {
 +            const message = proto.Message.decode(plaintext);
 +            if (!Object.keys(message).length || message.deviceSentMessage || message.secretEncryptedMessage ||
-+                message.protocolMessage || message.senderKeyDistributionMessage) return 'unsupported-envelope';
++                message.senderKeyDistributionMessage) return 'unsupported-envelope';
++            if (message.protocolMessage) {
++                const { type, key, editedMessage } = message.protocolMessage;
++                const fields = Object.keys(message.protocolMessage);
++                // Upstream AI_METADATA_OPERATION = 35; tag 31 is opaque to this client.
++                if (message.protocolMessage.aiMetadataOperation instanceof Uint8Array &&
++                    (type == null || type === 35) &&
++                    Object.keys(message).every(field => ['protocolMessage', 'messageContextInfo'].includes(field)) &&
++                    fields.every(field => ['type', 'key', 'timestampMs', 'aiMetadataOperation'].includes(field)))
++                    return 'ignored-metadata';
++                const data = editedMessage?.richResponseMessage?.unifiedResponse?.data;
++                // The edit event inherits this stanza's chat and sender, but takes its ID from the protocol key.
++                if (type !== proto.Message.ProtocolMessage.Type.MESSAGE_EDIT ||
++                    typeof key?.id !== 'string' || !key.id.trim() || key.id === target_id ||
++                    (edit_target_id !== undefined && key.id !== edit_target_id) ||
++                    (key.remoteJid != null && key.remoteJid !== from && !ownAddress(key.remoteJid, me)) ||
++                    (key.participant != null && key.participant !== from) ||
++                    !(data instanceof Uint8Array) || !data.length ||
++                    Object.keys(message).some(field => !['protocolMessage', 'messageContextInfo'].includes(field)) ||
++                    Object.keys(editedMessage).some(field => !['richResponseMessage', 'messageContextInfo'].includes(field)) ||
++                    fields.some(field => !['type', 'key', 'editedMessage', 'timestampMs'].includes(field)))
++                    return 'unsupported-envelope';
++            }
 +            return message;
 +        } catch {
 +            return 'invalid-payload';
@@ -154,7 +176,7 @@ diff --git a/lib/Utils/decode-wa-message.js b/lib/Utils/decode-wa-message.js
      const pushname = stanza?.attrs?.notify;
      const key = {
          remoteJid: chatId,
-@@ -109,13 +117,32 @@
+@@ -109,13 +117,33 @@
          sender: msgType === 'chat' ? author : chatId
      };
  }
@@ -168,6 +190,7 @@ diff --git a/lib/Utils/decode-wa-message.js b/lib/Utils/decode-wa-message.js
          async decrypt() {
 +            if (hasBotAddress(stanza)) {
 +                const result = await receiveDirectBot(stanza, { id: meId, lid: meLid }, { repository, hooks });
++                if (result === 'ignored-metadata') return result;
 +                if (typeof result !== 'string') {
 +                    fullMessage.message = result;
 +                    return;
@@ -188,7 +211,7 @@ diff --git a/lib/Utils/decode-wa-message.js b/lib/Utils/decode-wa-message.js
              let decryptables = 0;
              if (Array.isArray(stanza.content)) {
                  for (const { tag, attrs, content } of stanza.content) {
-@@ -196,4 +223,4 @@
+@@ -196,4 +224,4 @@
          }
      };
  };
@@ -213,7 +236,8 @@ diff --git a/lib/Utils/decode-wa-message.d.ts b/lib/Utils/decode-wa-message.d.ts
      fullMessage: WAMessage;
      category: string | undefined;
      author: string;
-     decrypt(): Promise<void>;
+-    decrypt(): Promise<void>;
++    decrypt(): Promise<void | 'ignored-metadata'>;
  };
 -//# sourceMappingURL=decode-wa-message.d.ts.map
 \ No newline at end of file
@@ -271,7 +295,8 @@ diff --git a/lib/Socket/messages-recv.js b/lib/Socket/messages-recv.js
              msg.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT, response];
          }
 @@ -649,6 +654,7 @@
-                     await decrypt();
+-                    await decrypt();
++                    if (await decrypt() === 'ignored-metadata') return sendMessageAck(node);
                      // message failed to decrypt
                      if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 +                        if (botTraffic) return sendMessageAck(node, NACK_REASONS.MissingMessageSecret);
@@ -295,6 +320,23 @@ diff --git a/lib/Socket/messages-recv.js b/lib/Socket/messages-recv.js
 -//# sourceMappingURL=messages-recv.js.map
 \ No newline at end of file
 +//# sourceMappingURL=messages-recv.js.map
+diff --git a/WAProto/index.js b/WAProto/index.js
+--- a/WAProto/index.js
++++ b/WAProto/index.js
+@@ -100853,8 +100853,13 @@
+                         }
+                     case 27: {
+                             message.memberLabel = $root.proto.MemberLabel.decode(reader, reader.uint32());
+                             break;
+                         }
++                    case 31: {
++                            // AIMetadataOperation is opaque: authenticated direct-bot ingress drops it.
++                            message.aiMetadataOperation = reader.bytes();
++                            break;
++                        }
+                     default:
+                         reader.skipType(tag & 7);
+                         break;
 diff --git a/lib/Types/Socket.d.ts b/lib/Types/Socket.d.ts
 --- a/lib/Types/Socket.d.ts
 +++ b/lib/Types/Socket.d.ts
