@@ -316,10 +316,12 @@ func (s *Store) put(msg Message, room messageRoom, live bool) error {
 		editedAt := parseStoreTime(msg.EditedAt)
 		editOrder := editedAt.Compare(parseStoreTime(old.EditedAt))
 		sender, _ := types.ParseJID(msg.SenderID)
-		// Bot snapshots can share a timestamp. A distinct live revision wins
-		// in receive order; the equality check below still drops exact repeats.
-		if msg.EditedAt != "" && !editedAt.Before(parseStoreTime(old.SentAt)) &&
-			(editOrder > 0 || (editOrder == 0 && live && !msg.FromMe && sender.IsBot())) {
+		botEdit := !msg.FromMe && sender.IsBot()
+		// Bot generation can precede relay time, and snapshots can share a
+		// generation timestamp. Keep edit ordering independent of the relay;
+		// the equality check below still drops exact repeats.
+		if msg.EditedAt != "" && (botEdit || !editedAt.Before(parseStoreTime(old.SentAt))) &&
+			(editOrder > 0 || (editOrder == 0 && live && botEdit)) {
 			updated.Text, updated.Kind, updated.EditedAt = msg.Text, msg.Kind, msg.EditedAt
 			updated.Attachments, updated.ReplyTo, updated.raw = msg.Attachments, msg.ReplyTo, msg.raw
 		}
